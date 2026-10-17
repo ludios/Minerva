@@ -288,6 +288,9 @@ def test_response_headers(mock_resource: HttpIo) -> None:
     assert headers[b"Expires"] == [b"-1"]
     # Possibly prevents initial buffering of streaming responses in WebKit.
     assert headers[b"Content-Type"] == [b"text/plain"]
+    # Without this, Chrome buffers the start of the response for MIME
+    # sniffing, and HTTP streaming stalls.
+    assert headers[b"X-Content-Type-Options"] == [b"nosniff"]
 
 
 def test_client_aborts_request(

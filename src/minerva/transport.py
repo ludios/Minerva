@@ -731,6 +731,9 @@ class ServerTransport(TwistedProtocol):
         # content to an XHR for progressive handling."
         # -- http://www.kylescholz.com/blog/2010/01/progressive_xmlhttprequest_1.html
         headers.setRawHeaders("content-type", ["text/plain"])
+        # Without this, browsers may buffer the start of the response to sniff
+        # its type, which stalls HTTP streaming.
+        headers.setRawHeaders("x-content-type-options", ["nosniff"])
 
         self.dataReceived(body)
 
