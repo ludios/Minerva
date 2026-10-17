@@ -171,7 +171,9 @@
       dumbtest pages; test resources (SimpleResponse, UnicodeRainbow,
       NoOriginHeader, GetEndpointInfo, DisplayConnections, wait_resource).
 - [x] 6. Tutorials (`minerva/tutorial/standalone_*.py`) -> runnable py3 scripts.
-- [ ] 7. Build scripts: `build_autocachebreakers.py` (port), JS build scripts
+- [x] 7. Build scripts: (scripts/build_js.py is ported but NOT yet run: needs
+      old closure-library + compiler; CLOSURE_PYTHON=python2 for their tools)
+- [x] 7a. `build_autocachebreakers.py` (port), JS build scripts
       (depend on Coreweb `_closurebuild`; port or replace), docs scripts.
 - [ ] 8. Smoke test real server: run `minerva-site`, curl HTTP transport with a
       hand-written hello frame; TCP int32 + policy file via a tiny Python client.

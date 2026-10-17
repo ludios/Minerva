@@ -2,12 +2,10 @@
 
 set -e
 
-# Windows users: this script can be run with MSYS bash.
-# Make sure you also have sed.exe and tr.exe.
+cd "$(dirname "$0")/.."
 
-# This depends on docutils
 for i in docs/*.rst
-	do rst2html.py \
+	do uv run --with docutils rst2html \
 		--link-stylesheet --file-insertion-enabled --tab-width=6 \
 		--stylesheet-path=style.css --report=3 $i \
 		| sed "s/<p><!-- expect dupe --><p /<p /g" \
