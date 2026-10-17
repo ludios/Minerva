@@ -1,0 +1,249 @@
+"""
+Tests for `minerva.site`, the development server.
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+from twisted.internet.task import Clock
+from twisted.web.resource import Resource, getChildForRequest
+from twisted.web.server import NOT_DONE_YET
+from twisted.web.static import File
+
+from minerva.site import (
+    DemoFactory,
+    DemoProtocol,
+    WaitResource,
+    make_site,
+    parse_args,
+    parse_ranges,
+    policy_file,
+    restricted_string_alphabet,
+)
+from minerva.stream import ServerStream, StreamTracker
+from tests.mocks import DummySocketLikeTransport, FakeRequest
+
+
+@pytest.fixture
+def clock() -> Clock:
+    return Clock()
+
+
+class TestDemoProtocol:
+    @pytest.fixture
+    def factory(self, clock: Clock) -> DemoFactory:
+        return DemoFactory(clock)
+
+    def start(
+        self, clock: Clock, factory: DemoFactory
+    ) -> tuple[ServerStream, DemoProtocol]:
+        stream = ServerStream(clock, "a stream id of unusual length", factory)
+        stream.transport_online(DummySocketLikeTransport(), True, None)
+        protocol = stream._protocol
+        assert isinstance(protocol, DemoProtocol)
+        return stream, protocol
+
+    def sent(self, stream: ServerStream) -> list[str]:
+        return [s for _, s in stream.queue.iter_items()]
+
+    @pytest.mark.parametrize(
+        ("received", "sent"),
+        [
+            ("echo:hello", ["hello"]),
+            ("echo:a:b", ["a:b"]),
+            ("echo:", [""]),
+            ("echo", ["unknown_message_type"]),
+            ("send_demo:", ["unknown_message_type"]),
+            ("what?", ["unknown_message_type"]),
+        ],
+    )
+    def test_commands(
+        self, clock: Clock, factory: DemoFactory, received: str, sent: list[str]
+    ) -> None:
+        stream, protocol = self.start(clock, factory)
+        protocol.string_received(received)
+        assert self.sent(stream) == sent
+
+    def test_echo_twice(self, clock: Clock, factory: DemoFactory) -> None:
+        stream, protocol = self.start(clock, factory)
+        protocol.string_received("echo_twice:hi")
+        assert self.sent(stream) == ["hi"]
+        clock.advance(0)
+        assert self.sent(stream) == ["hi", "hi"]
+
+    def test_reset_me(self, clock: Clock, factory: DemoFactory) -> None:
+        stream, protocol = self.start(clock, factory)
+        protocol.string_received("reset_me:because")
+        assert stream.disconnected
+
+    def test_send_demo(self, clock: Clock, factory: DemoFactory) -> None:
+        stream, protocol = self.start(clock, factory)
+        protocol.string_received("send_demo")
+        assert self.sent(stream) == [
+            "starting_send_demo",
+            f"alphabet: {restricted_string_alphabet()}",
+            " ".join(["#1"] * 5),
+        ]
+        clock.advance(0.2)
+        assert self.sent(stream)[3:] == [" ".join(["#2"] * 10)] * 2
+
+    def test_chat(self, clock: Clock, factory: DemoFactory) -> None:
+        stream1, protocol1 = self.start(clock, factory)
+        stream2, protocol2 = self.start(clock, factory)
+        protocol1.string_received("begin_chat")
+        protocol2.string_received("begin_chat")
+        protocol1.string_received("broadcast:hello all")
+        assert self.sent(stream1) == self.sent(stream2) == ["TEXT|1|hello all"]
+
+        stream1.reset_from_peer("bye", True)
+        assert factory.chatters == {protocol2}
+
+
+def test_restricted_string_alphabet() -> None:
+    alphabet = restricted_string_alphabet()
+    assert alphabet[0] == " "
+    assert alphabet[-1] == "~"
+    assert len(alphabet) == 95
+
+
+class TestParseRanges:
+    def test_valid(self) -> None:
+        assert parse_ranges("1-126,57344-65533") == [range(1, 127), range(57344, 65534)]
+
+    @pytest.mark.parametrize("bad", ["", "1", "1-", "2-1", "-1-5", "1-1114112", "a-b"])
+    def test_invalid(self, bad: str) -> None:
+        with pytest.raises(ValueError):
+            parse_ranges(bad)
+
+
+def test_policy_file() -> None:
+    assert policy_file([843, 8112]) == (
+        "<cross-domain-policy>\n"
+        '<allow-access-from domain="*" to-ports="843,8112"/>\n'
+        "</cross-domain-policy>"
+    )
+
+
+class TestParseArgs:
+    def test_defaults(self) -> None:
+        args = parse_args(["--http", "tcp:8111"])
+        assert args.http == ["tcp:8111"]
+        assert args.minerva == []
+        assert args.domain is None
+        assert isinstance(args.closure_library, Path)
+
+    def test_repeatable(self) -> None:
+        args = parse_args(["-t", "tcp:1", "-t", "tcp:2", "-m", "tcp:3"])
+        assert args.http == ["tcp:1", "tcp:2"]
+        assert args.minerva == ["tcp:3"]
+
+    def test_needs_a_server(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            parse_args([])
+        assert "start at least one" in capsys.readouterr().err
+
+
+class TestSite:
+    @pytest.fixture
+    def root(self, clock: Clock, tmp_path: Path) -> Resource:
+        tracker = StreamTracker(clock, DemoFactory(clock), inactive_check_interval=None)
+        site = make_site(
+            clock,
+            tracker,
+            domain="example.com",
+            main_socket_port=8112,
+            closure_library=tmp_path / "closure-library",
+            coreweb=tmp_path / "Coreweb",
+        )
+        return site.resource
+
+    def get(
+        self, root: Resource, path: bytes, **args: bytes
+    ) -> tuple[Resource, FakeRequest]:
+        request = FakeRequest()
+        request.method = b"GET"
+        request.postpath = path.split(b"/")[1:]
+        request.args = {k.encode(): [v] for k, v in args.items()}
+        resource = getChildForRequest(root, request)
+        result = resource.render(request)
+        if isinstance(result, bytes):
+            request.write(result)
+        return resource, request
+
+    def test_index(self, root: Resource) -> None:
+        request = FakeRequest()
+        request.postpath = [b""]
+        resource = getChildForRequest(root, request)
+        assert isinstance(resource, File)
+        assert resource.path.endswith("index.html")
+
+    @pytest.mark.parametrize("path", [b"/chatapp", b"/chatapp/"])
+    @pytest.mark.parametrize("standalone", [b"0", b"1"])
+    def test_chatapp(self, root: Resource, path: bytes, standalone: bytes) -> None:
+        _, request = self.get(root, path, standaloneClient=standalone)
+        page = request.written_bytes().decode()
+        assert '__demo_shared_domain = "example.com";' in page
+        assert "__demo_mainSocketPort = 8112;" in page
+        assert (
+            f"standaloneClient = {'true' if standalone == b'1' else 'false'};" in page
+        )
+        assert ("compiled_client/minerva-client.js" in page) == (standalone == b"1")
+
+    def test_dumbtest(self, root: Resource) -> None:
+        _, request = self.get(root, b"/dumbtest/")
+        assert "__demo_mainSocketPort = 8112;" in request.written_bytes().decode()
+
+    def test_endpoint_info(self, root: Resource) -> None:
+        _, request = self.get(root, b"/@testres_Minerva/GetEndpointInfo/")
+        assert json.loads(request.written_bytes()) == {"mainSocketPort": 8112}
+
+    def test_simple_response(self, root: Resource) -> None:
+        _, request = self.get(root, b"/@testres_Minerva/SimpleResponse/", a=b"0")
+        assert json.loads(request.written_bytes()) == {"you_sent_args": {"a": ["0"]}}
+
+    def test_unicode_rainbow(self, root: Resource) -> None:
+        _, request = self.get(
+            root, b"/@testres_Minerva/UnicodeRainbow/", ranges=b"65-67,9731-9731"
+        )
+        assert request.written_bytes().decode() == "ABC\N{SNOWMAN}"
+
+    def test_unicode_rainbow_bad_ranges(self, root: Resource) -> None:
+        _, request = self.get(root, b"/@testres_Minerva/UnicodeRainbow/", ranges=b"9-1")
+        assert request.responseCode == 400
+
+    def test_xdrframe_allows_the_domain(self, root: Resource) -> None:
+        _, request = self.get(
+            root, b"/_minerva/xdrframe/", id=b"f1", domain=b"example.com"
+        )
+        assert request.responseCode is None
+        assert b'__xdrframe_setupXDRFrame("f1");' in request.written_bytes()
+
+
+class TestWaitResource:
+    def test_get(self, clock: Clock) -> None:
+        request = FakeRequest()
+        request.method = b"GET"
+        request.args = {b"wait": [b"3"]}
+        assert WaitResource(clock).render(request) == NOT_DONE_YET
+        clock.advance(2.9)
+        assert request.finished == 0
+        clock.advance(0.1)
+        assert request.finished == 1
+        assert request.written_bytes().startswith(b"GIF89a")
+
+    @pytest.mark.parametrize("wait", [b"-1", b"601", b"x"])
+    def test_bad_wait_means_30_seconds(self, clock: Clock, wait: bytes) -> None:
+        request = FakeRequest()
+        request.args = {b"wait": [wait]}
+        WaitResource(clock).render(request)
+        clock.advance(29.9)
+        assert request.finished == 0
+        clock.advance(0.1)
+        assert request.finished == 1
+
+    def test_cancelled_if_client_goes_away(self, clock: Clock) -> None:
+        request = FakeRequest()
+        WaitResource(clock).render(request)
+        request.processingFailed(Exception("gone"))
+        assert clock.getDelayedCalls() == []

@@ -28,9 +28,9 @@ if(__demo_shared_domain) {
 	document.domain = __demo_shared_domain;
 }
 
-standaloneClient = {{ htmldumps(standaloneClient) }};
+standaloneClient = {{ htmldumps(standalone_client) }};
 
-__demo_mainSocketPort = {{ htmldumps(mainSocketPort) }};
+__demo_mainSocketPort = {{ htmldumps(main_socket_port) }};
 </script>
 
 <div id="info">
@@ -102,7 +102,7 @@ if(__demo_shared_domain) {
 <div id="minerva-elements"></div>
 <div id="log"></div>
 
-{% if not standaloneClient %}
+{% if not standalone_client %}
 <script src="/closure-library/closure/goog/base.js"></script>
 <script src="/js_coreweb/deps.js"></script>
 <script src="/js_minerva/deps.js"></script>

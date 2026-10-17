@@ -133,6 +133,15 @@
 - Strings that arrive together with (before) a bad frame are delivered and
   SACKed before the transport is killed (py2 crashed on a None stream).
 - `QANProtocolWrapper` handles a bad QAN frame (py2: NameError).
+- Dev server: `uv run minerva-site --http ENDPOINT --minerva ENDPOINT` (argparse
+  + Twisted endpoints) replaces `twistd minerva_site` (no daemonizing/pidfile;
+  use systemd or similar).  `--coreweb PATH` added (default `../Coreweb`).
+  Pyquitter auto-reloading dropped (use e.g. `watchfiles`).  Policy file lists
+  the *actual* listening ports.  Twisted logs are routed into stdlib logging.
+- DemoProtocol `send_demo` now also sends the `alphabet: ...` string (py2 passed
+  it as `validate=`).
+- Smoke-tested for real: HTTP long-poll (stream create, SACK, echo, reset) via
+  curl, and Flash policy file + int32 echo/heartbeats via raw sockets.
 - Twisted request "queued" handling dropped (modern Twisted never queues).
 - QAN: bodies are `str`; `KnownError(body)`/`UnknownError(body)` have `.body`.
   `body_received` may return a coroutine (`async def`).  `fail_all` no longer
@@ -151,7 +160,7 @@
       `protocols`?), `interfaces` -> Protocols.  Port `mocks` into tests.
 - [x] 4. Port `test_mserver` (3400 lines!) to pytest -> test_{stream,transport,
       integration,web}.py.  814 tests pass in ~5s.
-- [ ] 5. Dev site: `minerva_site` + `tap` -> `minerva/site.py` CLI; chatapp,
+- [x] 5. Dev site: `minerva_site` + `tap` -> `minerva/site.py` CLI; chatapp,
       dumbtest pages; test resources (SimpleResponse, UnicodeRainbow,
       NoOriginHeader, GetEndpointInfo, DisplayConnections, wait_resource).
 - [ ] 6. Tutorials (`minerva/tutorial/standalone_*.py`) -> runnable py3 scripts.
