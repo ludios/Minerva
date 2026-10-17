@@ -185,4 +185,11 @@
 - [x] 9. README, CHANGES (behavior changes), .editorconfig, CI workflow.
 - [ ] 10. Review pass: `/code-review`-style self review; consult Fable/Astra;
       grep `XXX(port)`.
-- [ ] 11. (stretch) closure-library for dev mode/JS tests; note TS plan.
+- [~] 11. (stretch) closure-library for dev mode/JS tests; note TS plan.
+      DONE: downloaded closure-library r2192 (commit 7f2b29f, Sep 2012 — what
+      the compiled client was built with) into ../closure-library.  The JS
+      unit-test suite (190 tests, 23 browser-specific skips) passes in headless
+      Chrome via tests/test_js.py (tests/chrome.py = tiny CDP client).  This
+      found the missing `X-Content-Type-Options: nosniff` regression that broke
+      HTTP streaming.  TODO: TS plan note; maybe try scripts/build_js.py
+      (needs old closure-compiler jar).

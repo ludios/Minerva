@@ -3,9 +3,6 @@ End-to-end tests: the compiled JavaScript client in headless Chrome, talking
 to the server over HTTP long-polling.  Skipped if Chrome isn't installed.
 """
 
-import html
-import re
-import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -13,10 +10,8 @@ from pathlib import Path
 
 import pytest
 
-CHROME = next(
-    filter(None, map(shutil.which, ["google-chrome", "chromium", "chromium-browser"])),
-    None,
-)
+from tests.chrome import CHROME, open_page
+
 pytestmark = [
     pytest.mark.browser,
     pytest.mark.skipif(CHROME is None, reason="needs Chrome or Chromium"),
@@ -38,34 +33,19 @@ def server_port() -> Iterator[int]:
             server.terminate()
 
 
-def browse(url: str, profile: Path) -> list[str]:
+def browse(url: str, last_line: str) -> list[str]:
     """
-    Load `url` and return the lines the page logged to #output.
+    Load `url`, wait until the page logs `last_line` to #output, and return
+    all the lines it logged.
     """
-    assert CHROME is not None
-    dom = subprocess.run(
-        [
-            CHROME,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            f"--user-data-dir={profile}",
-            "--timeout=20000",
-            "--dump-dom",
-            url,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=True,
-    ).stdout
-    match = re.search(r'<pre id="output">(.*?)</pre>', dom, re.DOTALL)
-    assert match is not None, dom
-    return html.unescape(match.group(1)).splitlines()
+    output = "document.getElementById('output').innerText"
+    with open_page(url) as page:
+        page.wait_for(f"{output}.includes({last_line!r})", timeout=30)
+        return page.evaluate(output).splitlines()
 
 
-def test_strings(server_port: int, tmp_path: Path) -> None:
-    assert browse(f"http://127.0.0.1:{server_port}/strings", tmp_path) == [
+def test_strings(server_port: int) -> None:
+    assert browse(f"http://127.0.0.1:{server_port}/strings", "reset: done") == [
         "started",
         "got: Hey client, you sent me a string with 5 bytes",
         "got: Hey client, you sent me a string with 14 bytes",
@@ -73,8 +53,8 @@ def test_strings(server_port: int, tmp_path: Path) -> None:
     ]
 
 
-def test_qan_with_async_answer(server_port: int, tmp_path: Path) -> None:
-    assert browse(f"http://127.0.0.1:{server_port}/qan", tmp_path) == [
+def test_qan_with_async_answer(server_port: int) -> None:
+    assert browse(f"http://127.0.0.1:{server_port}/qan", "reset: done") == [
         "started",
         "answer: [1]",
         "reset: done",

@@ -14,16 +14,13 @@ from twisted.web.resource import Resource
 from twisted.web.server import Request, Site
 
 from minerva import StreamTracker, WebPort
-from minerva.site import WaitResource
 from minerva.tutorial import standalone_1_rstring, standalone_6_qan_deferred
 from minerva.web import put_child
 
-# Each page logs what happens into #output.  The image delays the page's load
-# event (and so headless Chrome's --dump-dom) by 3 seconds.
+# Each page logs what happens into #output.
 PAGE = """<!doctype html>
 <div id="minerva-elements"></div>
 <pre id="output"></pre>
-<img src="/wait/?wait=3">
 <script src="/_minerva/minerva-client.js"></script>
 <script>
 var log = function(m) {
@@ -85,7 +82,6 @@ async def main(reactor: IReactorCore) -> None:
     put_child(root, b"_minerva", WebPort(reactor, strings_tracker))
     put_child(root, b"_minerva_strings", WebPort(reactor, strings_tracker))
     put_child(root, b"_minerva_qan", WebPort(reactor, qan_tracker))
-    put_child(root, b"wait", WaitResource(reactor))
 
     port = await serverFromString(reactor, "tcp:0:interface=127.0.0.1").listen(
         Site(root)

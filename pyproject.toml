@@ -35,6 +35,7 @@ minerva-site = "minerva.site:main"
 dev = [
     "coverage>=7.10",
     "hypothesis>=6.150",
+    "websockets>=15",
     "pytest>=9.0",
     "ruff>=0.17",
     "ty>=0.0.89",
