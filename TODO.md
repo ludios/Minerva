@@ -119,6 +119,9 @@
 - Hello frames: any non-ASCII *string value* (even for unknown keys) is
   rejected, as before; frames containing non-ASCII *bytes* are now invalid.
 - Decoders raise `FrameTooLong` instead of returning `(frames, TOO_LONG)`.
+- QAN: bodies are `str`; `KnownError(body)`/`UnknownError(body)` have `.body`.
+  `body_received` may return a coroutine (`async def`).  `fail_all` no longer
+  crashes on already-cancelled questions (py2 called `None.errback`).
 
 ## Phases
 
@@ -127,8 +130,8 @@
       ruff/ty/pytest config, `scripts/nixos-fix-venv.sh`.  Commit.
 - [x] 1. `git mv` package to `src/minerva/`, tests to `tests/` (pure moves,
       separate commit to keep history traceable).
-- [ ] 2. Port leaf modules + tests: [x] `objcheck`, [x] `window`, [x] `decoders`,
-      [x] `frames`, [ ] `qan`.  Add hypothesis property tests.  ruff + ty clean.  Commit each.
+- [x] 2. Port leaf modules + tests: [x] `objcheck`, [x] `window`, [x] `decoders`,
+      [x] `frames`, [x] `qan`.  Add hypothesis property tests.  ruff + ty clean.  Commit each.
 - [ ] 3. Port `mserver` -> split modules (`stream`, `transport`, `web`,
       `protocols`?), `interfaces` -> Protocols.  Port `mocks` into tests.
 - [ ] 4. Port `test_mserver` (3400 lines!) to pytest.  This is the big one.

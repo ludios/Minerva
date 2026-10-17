@@ -1,398 +1,323 @@
 """
-QAN is a protocol that allows asking the peer a question and receiving an
-answer or error-answer.  You can think of this as the "simplest wire-level
-implementation of Deferreds", which is what AMP calls itself, though QAN takes
-it even further: there is no command dispatching, and requests/responses
-are completely unspecified.  (Though there are some helper functions here
-that assume the requests/responses are bytestrings.)
+QAN (question, answer, notification) lets you ask the peer a question and
+receive an answer or error-answer, or just notify it of something.
+
+You can think of it as the "simplest wire-level implementation of Deferreds",
+which is what AMP calls itself, but QAN goes even further: there is no command
+dispatching, and the bodies of questions and answers (restricted strings,
+when used over Minerva) are up to you.
 
 QAN does not require Minerva; you can use it over any bidirectional framed
 stream.
 """
 
-import sys
-import operator
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any, cast
 
-from twisted.python import failure
-from twisted.internet import defer
+from twisted.internet.defer import CancelledError, Deferred, maybeDeferred
+from twisted.python.failure import Failure
 
-from minerva.objcheck import strToNonNegLimit
-
-
-_postImportVars = vars().keys()
+from minerva.objcheck import str_to_non_neg_limit
 
 
-# Not a meaningful superclass, just something to avoid copy/pasting
-class _BodyAndId(tuple):
-	__slots__ = ()
-
-	body = property(operator.itemgetter(1))
-	qid = property(operator.itemgetter(2))
-
-	def __new__(cls, body, qid):
-		return tuple.__new__(cls, (cls._MARKER, body, qid))
+@dataclass(frozen=True, slots=True)
+class Question:
+    body: str
+    qid: int
 
 
-	def __repr__(self):
-		return '%s(%r, %r)' % (self.__class__.__name__, self[1], self[2])
+@dataclass(frozen=True, slots=True)
+class OkayAnswer:
+    body: str
+    qid: int
 
 
-
-class _JustQid(tuple):
-	__slots__ = ()
-
-	qid = property(operator.itemgetter(1))
-
-	def __new__(cls, body):
-		return tuple.__new__(cls, (cls._MARKER, body))
+@dataclass(frozen=True, slots=True)
+class KnownErrorAnswer:
+    body: str
+    qid: int
 
 
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self[1])
+@dataclass(frozen=True, slots=True)
+class UnknownErrorAnswer:
+    body: str
+    qid: int
 
 
-
-class _JustBody(tuple):
-	__slots__ = ()
-
-	body = property(operator.itemgetter(1))
-
-	def __new__(cls, body):
-		return tuple.__new__(cls, (cls._MARKER, body))
+@dataclass(frozen=True, slots=True)
+class Cancellation:
+    qid: int
 
 
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self[1])
+@dataclass(frozen=True, slots=True)
+class Notification:
+    body: str
 
 
-
-class Question(_BodyAndId):
-	__slots__ = ()
-	_MARKER = object()
-
-
-
-class OkayAnswer(_BodyAndId):
-	__slots__ = ()
-	_MARKER = object()
-
-
-
-class KnownErrorAnswer(_BodyAndId):
-	__slots__ = ()
-	_MARKER = object()
-
-
-
-class UnknownErrorAnswer(_BodyAndId):
-	__slots__ = ()
-	_MARKER = object()
-
-
-
-class Cancellation(_JustQid):
-	__slots__ = ()
-	_MARKER = object()
-
-
-
-class Notification(_JustBody):
-	__slots__ = ()
-	_MARKER = object()
-
-
-
-qanTypeToCode = {
-	 Question: "Q"
-	,OkayAnswer: "K"
-	,KnownErrorAnswer: "E"
-	,UnknownErrorAnswer: "U"
-	,Cancellation: "C"
-	,Notification: "#"
-}
-
-
-def qanFrameToString(qanFrame):
-	"""
-	@param qanFrame: The QAN frame to encode
-	@type qanFrame: a L{Question} or L{OkayAnswer} or L{KnownErrorAnswer} or
-		L{UnknownErrorAnswer} or L{Cancellation} or L{Notification}, all of
-		which must have a C{str} C{.body}.  (Except for L{Cancellation},
-		which has no C{.body}.)
-
-	@return: The encoded QAN frame
-	@rtype: str
-	"""
-	qanFrameType = type(qanFrame)
-	code = qanTypeToCode[qanFrameType]
-	if qanFrameType == Cancellation:
-		return str(qanFrame.qid) + code
-	else:
-		if not isinstance(qanFrame.body, str):
-			raise TypeError("qanFrame.body must be a str, was %r" % (
-				qanFrame.body,))
-
-		if qanFrameType == Notification:
-			return qanFrame.body + code
-		else:
-			return qanFrame.body + "|" + str(qanFrame.qid) + code
+type Answer = OkayAnswer | KnownErrorAnswer | UnknownErrorAnswer
+type QANFrame = Question | Answer | Cancellation | Notification
 
 
 class InvalidQANFrame(Exception):
-	pass
+    pass
 
 
-
-def _qidOrThrow(s):
-	try:
-		return strToNonNegLimit(s, 2**53)
-	except ValueError:
-		raise InvalidQANFrame("bad qid")
-
-
-def stringToQANFrame(frameString):
-	"""
-	@param frameString: The QAN frame, encoded as a string
-	@type frameString: C{str}
-
-	@return: The QAN frame
-	@rtype qf: a L{Question} or L{OkayAnswer} or L{ErrorAnswer} or
-		L{Cancellation} or L{Notification}, with a C{str} C{.body}.
-	"""
-	try:
-		lastByte = frameString[-1]
-	except IndexError:
-		raise InvalidQANFrame("0-length frame")
-
-	if lastByte == "#":
-		return Notification(frameString[:-1])
-	elif lastByte == "C":
-		qid = _qidOrThrow(frameString[:-1])
-		return Cancellation(qid)
-	else:
-		try:
-			body, rest = frameString.rsplit('|', 1)
-		except ValueError:
-			raise InvalidQANFrame("Expected pipe char in frame")
-		qid = _qidOrThrow(rest[:-1])
-
-		if lastByte == "Q":
-			return Question(body, qid)
-		elif lastByte == "K":
-			return OkayAnswer(body, qid)
-		elif lastByte == "E":
-			return KnownErrorAnswer(body, qid)
-		elif lastByte == "U":
-			return UnknownErrorAnswer(body, qid)
-		else:
-			raise InvalidQANFrame("Invalid QAN frame type %r" % lastByte)
+def qan_frame_to_string(frame: QANFrame) -> str:
+    """
+    Encode a QAN frame (whose body, if any, must be a `str`).
+    """
+    match frame:
+        case Cancellation(qid):
+            return f"{qid}C"
+        case Notification(body):
+            return f"{_check_body(body)}#"
+        case Question(body, qid):
+            return f"{_check_body(body)}|{qid}Q"
+        case OkayAnswer(body, qid):
+            return f"{_check_body(body)}|{qid}K"
+        case KnownErrorAnswer(body, qid):
+            return f"{_check_body(body)}|{qid}E"
+        case UnknownErrorAnswer(body, qid):
+            return f"{_check_body(body)}|{qid}U"
 
 
-def isAnswerFrame(qanFrame):
-	"""
-	Is C{qanFrame} an L{OkayAnswer}, L{KnownErrorAnswer}, or L{UnknownErrorAnswer}?
-	"""
-	return isinstance(qanFrame, (OkayAnswer, KnownErrorAnswer, UnknownErrorAnswer))
+def _check_body(body: object) -> str:
+    if not isinstance(body, str):
+        raise TypeError(f"QAN frame body must be a str, was {body!r}")
+    return body
 
 
-def frameHasBody(qanFrame):
-	"""
-	Does this C{qanFrame} have a body?  (Everything but L{Cancellation} does.)
-	"""
-	return not isinstance(qanFrame, Cancellation)
+_TYPES_WITH_BODY_AND_QID: dict[str, type[Question | Answer]] = {
+    "Q": Question,
+    "K": OkayAnswer,
+    "E": KnownErrorAnswer,
+    "U": UnknownErrorAnswer,
+}
+
+
+def string_to_qan_frame(s: str) -> QANFrame:
+    """
+    Decode a QAN frame encoded by `qan_frame_to_string`.  Raises
+    `InvalidQANFrame` if it is malformed.
+    """
+    code, rest = s[-1:], s[:-1]
+    match code:
+        case "":
+            raise InvalidQANFrame("0-length frame")
+        case "#":
+            return Notification(rest)
+        case "C":
+            return Cancellation(_parse_qid(rest))
+        case _ if code in _TYPES_WITH_BODY_AND_QID:
+            body, sep, qid = rest.rpartition("|")
+            if not sep:
+                raise InvalidQANFrame("Expected pipe char in frame")
+            return _TYPES_WITH_BODY_AND_QID[code](body, _parse_qid(qid))
+        case _:
+            raise InvalidQANFrame(f"Invalid QAN frame type {code!r}")
+
+
+def _parse_qid(s: str) -> int:
+    try:
+        return str_to_non_neg_limit(s, 2**53)
+    except ValueError:
+        raise InvalidQANFrame("bad qid") from None
 
 
 class KnownError(Exception):
-	pass
+    """
+    Raise (or errback with) this in `body_received` to send the peer an
+    error-answer with body `body`.  An `ask` Deferred errbacks with this when
+    the peer sends an error-answer.
+    """
 
+    def __init__(self, body: str) -> None:
+        super().__init__(body)
+        self.body = body
 
 
 class UnknownError(Exception):
-	pass
+    """
+    An `ask` Deferred errbacks with this when the peer had an uncaught
+    exception while answering.
+    """
 
+    def __init__(self, body: str) -> None:
+        super().__init__(body)
+        self.body = body
 
 
 class QuestionFailed(Exception):
-	pass
+    """
+    An `ask` Deferred errbacks with this after `QANHelper.fail_all`.
+    """
 
 
-
-class QANHelper(object):
-	def __init__(self, bodyReceived, logError, sendQANFrame, fatalError):
-		"""
-		@param bodyReceived: The 2-arg function to call when
-			a Question or Notification is received (via a call to .handleString).
-			Called with arguments: body, isQuestion.
-
-		@param logError: A 2-arg function called when bodyReceived raises
-			an exception, or when QANHelper has a non-fatal internal error.
-			Called with arguments: error message, L{Failure} object
-
-		@param sendQANFrame: A 1-arg function that sends a QAN frame to the
-			peer.  Called with argument: qanFrame.
-
-		@param fatalError: A 1-arg function called when QANHelper can no longer
-			handle QAN frames.  Called with argument: reason (a C{str} with bytes
-			in inclusive range 0x20 (SPACE) to 0x7E (~)).  After fatalError is called,
-			you must stop calling C{handleQANFrame} to prevent fatalError from
-			possibly being called again.
-		"""
-		self._bodyReceived = bodyReceived
-		self._logError = logError
-		self._sendQANFrame = sendQANFrame
-		self._fatalError = fatalError
-
-		self._qidCounter = 0
-		self._ourQuestions = {}
-		self._theirQuestions = {}
+type BodyReceived = Callable[
+    [str, bool], str | Deferred[str] | Coroutine[Deferred[Any], Any, str] | None
+]
 
 
-	def __repr__(self):
-		return ('<%s asked %d questions, waiting for %d peer answers '
-			'and %d local answers>') % (self.__class__.__name__,
-				self._qidCounter, len(self._ourQuestions),
-				len(self._theirQuestions))
+class QANHelper:
+    """
+    Keeps track of the questions asked by us and by the peer.
+    """
 
+    def __init__(
+        self,
+        body_received: BodyReceived,
+        log_error: Callable[[str, Failure], None],
+        send_qan_frame: Callable[[QANFrame], None],
+        fatal_error: Callable[[str], None],
+    ) -> None:
+        """
+        Args:
+            body_received: Called with `(body, is_question)` when the peer
+                sends a Question or Notification.  For a question, the return
+                value (which may also be a Deferred or a coroutine) is the
+                answer.
+            log_error: Called with `(message, failure)` when `body_received`
+                raises for a Notification or a non-`KnownError` for a
+                Question, or for other non-fatal internal errors.
+            send_qan_frame: Sends a QAN frame to the peer.
+            fatal_error: Called with a reason (a restricted string) when we
+                can no longer handle QAN frames.  After that, stop calling
+                `handle_qan_frame`.
+        """
+        self._body_received = body_received
+        self._log_error = log_error
+        self._send_qan_frame = send_qan_frame
+        self._fatal_error = fatal_error
 
-	def _sendOkayAnswer(self, body, qid):
-		del self._theirQuestions[qid]
-		self._sendQANFrame(OkayAnswer(body, qid))
+        self._qid_counter = 0
+        # qid -> Deferred, or None if we already gave up on the question
+        # (cancelled it, or `fail_all`ed) but still expect an answer.
+        self._our_questions: dict[int, Deferred[str] | None] = {}
+        self._their_questions: dict[int, Deferred[str]] = {}
 
+    def __repr__(self) -> str:
+        return (
+            f"<{type(self).__name__} asked {self._qid_counter} questions, "
+            f"waiting for {len(self._our_questions)} peer answers "
+            f"and {len(self._their_questions)} local answers>"
+        )
 
-	def _sendErrorAnswer(self, failure, qid):
-		del self._theirQuestions[qid]
-		if failure.check(KnownError):
-			body = failure.value[0]
-			self._sendQANFrame(KnownErrorAnswer(body, qid))
-		elif failure.check(defer.CancelledError):
-			self._sendQANFrame(UnknownErrorAnswer("CancelledError", qid))
-		else:
-			self._logError("Peer's Question #%d caused uncaught "
-				"exception" % (qid,), failure)
-			# We intentionally do not reveal information about the
-			# exception.
-			self._sendQANFrame(UnknownErrorAnswer("Uncaught exception", qid))
+    def _send_okay_answer(self, body: str, qid: int) -> None:
+        del self._their_questions[qid]
+        self._send_qan_frame(OkayAnswer(body, qid))
 
+    def _send_error_answer(self, failure: Failure, qid: int) -> None:
+        del self._their_questions[qid]
+        match failure.value:
+            case KnownError(body=body):
+                self._send_qan_frame(KnownErrorAnswer(body, qid))
+            case CancelledError():
+                self._send_qan_frame(UnknownErrorAnswer("CancelledError", qid))
+            case _:
+                self._log_error(
+                    f"Peer's Question #{qid} caused uncaught exception", failure
+                )
+                # We intentionally don't reveal anything about the exception.
+                self._send_qan_frame(UnknownErrorAnswer("Uncaught exception", qid))
 
-	def handleQANFrame(self, qanFrame):
-		if isAnswerFrame(qanFrame):
-			qid = qanFrame.qid
-			try:
-				d = self._ourQuestions.pop(qid)
-			except KeyError:
-				self._fatalError("Received an answer with invalid qid: %d" % (qid,))
-				return
+    def handle_qan_frame(self, frame: QANFrame) -> None:
+        match frame:
+            case OkayAnswer() | KnownErrorAnswer() | UnknownErrorAnswer():
+                self._handle_answer(frame)
 
-			if d is None:
-				# Ignore the answer to a question we cancelled or failAll'ed.
-				pass
-			elif isinstance(qanFrame, OkayAnswer):
-				d.callback(qanFrame.body)
-			elif isinstance(qanFrame, KnownErrorAnswer):
-				d.errback(KnownError(qanFrame.body))
-			elif isinstance(qanFrame, UnknownErrorAnswer):
-				d.errback(UnknownError(qanFrame.body))
-			else:
-				raise RuntimeError("handleQANFrame bug")
+            case Notification(body):
+                try:
+                    self._body_received(body, False)
+                except Exception:
+                    self._log_error(
+                        "Peer's Notification caused uncaught exception", Failure()
+                    )
 
-		elif isinstance(qanFrame, Notification):
-			try:
-				self._bodyReceived(qanFrame.body, False)
-			except Exception:
-				self._logError("Peer's Notification caused uncaught "
-					"exception", failure.Failure())
+            case Question(body, qid):
+                if qid in self._their_questions:
+                    self._fatal_error(f"Received Question with duplicate qid: {qid}")
+                    return
+                # maybeDeferred unwraps a returned Deferred or coroutine, but its
+                # signature can't express that for a union return type.
+                d = cast(
+                    "Deferred[str]", maybeDeferred(self._body_received, body, True)
+                )
+                self._their_questions[qid] = d
+                d.addCallbacks(
+                    self._send_okay_answer,
+                    self._send_error_answer,
+                    callbackArgs=(qid,),
+                    errbackArgs=(qid,),
+                )
+                d.addErrback(
+                    lambda failure: self._log_error(
+                        "Bug in QANHelper._send_okay_answer or _send_error_answer",
+                        failure,
+                    )
+                )
 
-		elif isinstance(qanFrame, Question):
-			qid = qanFrame.qid
-			if qid in self._theirQuestions:
-				self._fatalError("Received Question with duplicate qid: %d" % (qid,))
-				return
-			d = defer.maybeDeferred(
-				self._bodyReceived, qanFrame.body, True)
-			self._theirQuestions[qid] = d
-			d.addCallbacks(
-				self._sendOkayAnswer, self._sendErrorAnswer,
-				callbackArgs=(qid,), errbackArgs=(qid,))
-			d.addErrback(lambda failure: self._logError(
-				"Bug in QANHelper._sendOkayAnswer or _sendErrorAnswer", failure))
+            case Cancellation(qid):
+                # Cancellations for nonexistent questions are ignored.  We don't
+                # remove the question here: a cancelled Deferred still runs its
+                # callback or errback chain, which sends the (final) answer.
+                if (d := self._their_questions.get(qid)) is not None:
+                    d.cancel()
 
-		elif isinstance(qanFrame, Cancellation):
-			qid = qanFrame.qid
-			try:
-				# We don't .pop() it here because a cancelled Deferred
-				# still goes through the callback or errback chain, and
-				# our _sendOkayAnswer and _sendErrorAnswer
-				# deletes it from self._theirQuestions.
-				d = self._theirQuestions[qid]
-			except KeyError:
-				# Cancellations for nonexistent questions are ignored.
-				pass
-			else:
-				d.cancel()
+    def _handle_answer(self, answer: Answer) -> None:
+        try:
+            d = self._our_questions.pop(answer.qid)
+        except KeyError:
+            self._fatal_error(f"Received an answer with invalid qid: {answer.qid}")
+            return
+        if d is None:
+            return  # The answer to a question we cancelled or `fail_all`ed
 
+        match answer:
+            case OkayAnswer(body):
+                d.callback(body)
+            case KnownErrorAnswer(body):
+                d.errback(KnownError(body))
+            case UnknownErrorAnswer(body):
+                d.errback(UnknownError(body))
 
-	def _sendCancel(self, qid):
-		self._ourQuestions[qid] = None
+    def _send_cancel(self, qid: int) -> None:
+        self._our_questions[qid] = None
+        # Even after cancelling, we expect an answer from the peer (at least
+        # in the typical case where the stream does not reset).
+        self._send_qan_frame(Cancellation(qid))
+        # Because this canceller doesn't call .callback or .errback, the
+        # Deferred errbacks with CancelledError.
 
-		# Note: when we cancel something, we still expect to get either
-		# an OkayAnswer or *ErrorAnswer from the peer, at least in the
-		# typical case where the Stream does not reset.
-		self._sendQANFrame(Cancellation(qid))
+    def ask(self, body: str) -> Deferred[str]:
+        """
+        Send a Question to the peer.
 
-		# Because we don't call .callback or .errback in this canceller,
-		# Deferred calls .errback(CancelledError()) for us.
+        Returns a Deferred that fires with the answer's body, or errbacks with
+        `KnownError`, `UnknownError`, or `QuestionFailed`.  Cancelling it sends
+        a Cancellation to the peer.
+        """
+        qid = self._qid_counter + 1
+        # This may raise if `body` is invalid.
+        self._send_qan_frame(Question(body, qid))
+        self._qid_counter = qid
 
+        d: Deferred[str] = Deferred(lambda _: self._send_cancel(qid))
+        self._our_questions[qid] = d
+        return d
 
-	def ask(self, body):
-		"""
-		Send a Question to the peer.
+    def notify(self, body: str) -> None:
+        """
+        Send a Notification to the peer.
+        """
+        self._send_qan_frame(Notification(body))
 
-		@param body: The question body
-		@type body: *
-
-		@return: a Deferred that will callback the response object, or errback
-			with L{KnownError} or L{UnknownError} or L{QuestionFailed}.
-		@rtype: L{defer.Deferred}
-		"""
-		qid = self._qidCounter + 1
-		# Note: _sendQANFrame may raise exception if body is invalid
-		self._sendQANFrame(Question(body, qid))
-		self._qidCounter += 1
-
-		assert qid not in self._ourQuestions
-		d = defer.Deferred(lambda _: self._sendCancel(qid))
-		self._ourQuestions[qid] = d
-		return d
-
-
-	def notify(self, body):
-		"""
-		Send a Notification to the peer.
-
-		@param body: The notification body
-		@type body: *
-
-		@return: None
-		@rtype: C{None}
-		"""
-		self._sendQANFrame(Notification(body))
-
-
-	def failAll(self, reason):
-		"""
-		Errback all of our questions with L{QuestionFailed}.
-
-		@param reason: Reason for failing; used as the L{QuestionFailed}
-			exception message.
-		@type reason: C{str}
-		"""
-		# .copy() because some buggy errback might .ask() a question
-		for qid, d in self._ourQuestions.copy().iteritems():
-			self._ourQuestions[qid] = None
-			d.errback(QuestionFailed(reason))
-
-
-
-try: from refbinder.api import bindRecursive
-except ImportError: pass
-else: bindRecursive(sys.modules[__name__], _postImportVars)
+    def fail_all(self, reason: str) -> None:
+        """
+        Errback all of our pending questions with `QuestionFailed(reason)`.
+        """
+        # A list() copy, because some buggy errback might .ask() a question.
+        for qid, d in list(self._our_questions.items()):
+            self._our_questions[qid] = None
+            if d is not None:
+                d.errback(QuestionFailed(reason))
