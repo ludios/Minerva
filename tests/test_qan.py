@@ -201,6 +201,40 @@ class TestQANHelper:
         clock.advance(1.0)
         assert sent == [OkayAnswer("SHOUT", 1), KnownErrorAnswer("as requested", 2)]
 
+    def test_notification_handled_by_coroutine(self) -> None:
+        clock = Clock()
+        received: list[str] = []
+
+        async def body_received(body: str, is_question: bool) -> None:
+            d: Deferred[None] = Deferred()
+            clock.callLater(1.0, d.callback, None)
+            await d
+            received.append(body)
+
+        h = QANHelper(body_received, unused, unused, unused)
+        h.handle_qan_frame(Notification("poke"))
+        clock.advance(1.0)
+        assert received == ["poke"]
+
+    def test_answer_not_a_str(self) -> None:
+        """
+        If the answer isn't a `str`, the error is logged and the peer gets an
+        UnknownErrorAnswer, rather than no answer at all.
+        """
+        logged: list[tuple[str, Failure]] = []
+        sent: list[QANFrame] = []
+        h = QANHelper(
+            lambda body, is_question: None,
+            lambda *a: logged.append(a),
+            sent.append,
+            unused,
+        )
+        h.handle_qan_frame(Question("forgot to return?", 1))
+        [(message, failure)] = logged
+        assert message == "The answer to peer's Question #1 is not a str"
+        assert failure.check(TypeError)
+        assert sent == [UnknownErrorAnswer("Uncaught exception", 1)]
+
     def test_question_received_duplicate_qid(self) -> None:
         received: list[str] = []
 

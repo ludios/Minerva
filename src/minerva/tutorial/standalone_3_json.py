@@ -1,59 +1,63 @@
-# Since we're not using twistd, we need to set up logging.
-import sys
-from twisted.python import log
-log.startLogging(sys.stdout)
+"""
+Tutorial 3: broadcast what each client says to every client.
 
-from twisted.web import resource, server
-from twisted.internet import reactor
+Run it with `uv run python -m minerva.tutorial.standalone_3_json`, then open
+http://127.0.0.1:10001/ in a few browser tabs.
+"""
 
-from minerva.mserver import WebPort, StreamTracker
+import json
 
-try:
-	import simplejson as json
-except ImportError:
-	import json
+from twisted.internet import task
+from twisted.internet.defer import Deferred
+from twisted.internet.endpoints import serverFromString
+from twisted.internet.interfaces import IReactorCore
+from twisted.web.resource import Resource
+from twisted.web.server import Request, Site
 
-
-# This is the server-side protocol where you'll receive the client's strings.
-class DemoProtocol(object):
-	def streamStarted(self, stream):
-		self.stream = stream
-		self.id = self.factory.clientCounter
-		self.factory.clients.add(self)
-
-	def streamReset(self, reasonString, applicationLevel):
-		log.msg("Stream reset: %r" % (reasonString,))
-		self.factory.clients.remove(self)
-
-	def stringReceived(self, s):
-		text = json.loads(s)
-		print "Received from client #%d: %r" % (self.id, text)
-		for protocol in self.factory.clients:
-			if protocol == self:
-				protocol.stream.sendString(
-					json.dumps(u"You said: %s" % (text,)))
-			else:
-				protocol.stream.sendString(
-					json.dumps(u"Client #%d said: %s" % (self.id, text)))
+from minerva import ServerStream, StreamTracker, WebPort
+from minerva.web import put_child
 
 
-# The factory can be used to store data and instantiate objects
-# shared by the connected protocols.
-class DemoFactory(object):
-	def __init__(self):
-		self.clientCounter = 0
-		self.clients = set()
+# The server-side protocol, where you receive the client's strings.
+class DemoProtocol:
+    stream: ServerStream
 
-	def buildProtocol(self):
-		self.clientCounter += 1
-		protocol = DemoProtocol()
-		protocol.factory = self
-		return protocol
+    def __init__(self, factory: DemoFactory, id: int) -> None:
+        self.factory = factory
+        self.id = id
+
+    def stream_started(self, stream: ServerStream) -> None:
+        self.stream = stream
+        self.factory.clients.add(self)
+
+    def stream_reset(self, reason_string: str, application_level: bool) -> None:
+        print(f"Stream reset: {reason_string!r}")
+        self.factory.clients.remove(self)
+
+    def string_received(self, s: str) -> None:
+        text = json.loads(s)
+        print(f"Received from client #{self.id}: {text!r}")
+        for protocol in self.factory.clients:
+            if protocol is self:
+                protocol.stream.send_string(json.dumps(f"You said: {text}"))
+            else:
+                protocol.stream.send_string(
+                    json.dumps(f"Client #{self.id} said: {text}")
+                )
 
 
-class MyDemo(resource.Resource):
-	def render_GET(self, request):
-		return r"""<!doctype html>
+# The factory can hold data and objects shared by the connected protocols.
+class DemoFactory:
+    def __init__(self) -> None:
+        self.client_counter = 0
+        self.clients: set[DemoProtocol] = set()
+
+    def build_protocol(self) -> DemoProtocol:
+        self.client_counter += 1
+        return DemoProtocol(self, self.client_counter)
+
+
+PAGE = r"""<!doctype html>
 <div id="minerva-elements"></div> <!-- required container -->
 
 Send Unicode string to everyone:
@@ -98,23 +102,24 @@ stream.start();
 """
 
 
-class Root(resource.Resource):
-	def __init__(self, webPort):
-		resource.Resource.__init__(self)
-		self.putChild('', MyDemo())
-		self.putChild('_minerva', webPort)
+class DemoPage(Resource):
+    isLeaf = True
+
+    def render_GET(self, request: Request) -> bytes:
+        return PAGE.encode()
 
 
-def makeSite():
-	clock = reactor
-	factory = DemoFactory()
-	tracker = StreamTracker(clock, factory)
-	webPort = WebPort(clock, tracker)
-	root = Root(webPort)
-	# timeout= is twisted.web's keep-alive timeout that determines how long
-	# before the server disconnects HTTP connections with no active requests.
-	return server.Site(root, timeout=75)
+async def main(reactor: IReactorCore) -> None:
+    tracker = StreamTracker(reactor, DemoFactory())
+    root = Resource()
+    put_child(root, b"", DemoPage())
+    put_child(root, b"_minerva", WebPort(reactor, tracker))
+    # `timeout` is how long an HTTP connection without requests stays open.
+    site = Site(root, timeout=75)
+    await serverFromString(reactor, "tcp:10001:interface=127.0.0.1").listen(site)
+    print("Open http://127.0.0.1:10001/ in your browser.")
+    await Deferred()  # Serve until interrupted.
 
 
-reactor.listenTCP(10001, makeSite())
-reactor.run()
+if __name__ == "__main__":
+    task.react(main)

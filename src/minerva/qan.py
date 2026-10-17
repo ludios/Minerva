@@ -154,8 +154,15 @@ class QuestionFailed(Exception):
     """
 
 
+# The answer to a question, or `None` for a notification.
+type BodyReceivedResult = str | None
 type BodyReceived = Callable[
-    [str, bool], str | Deferred[str] | Coroutine[Deferred[Any], Any, str] | None
+    [str, bool],
+    # `Deferred[Any]`, because Deferred is invariant: a `Deferred[str]` is not
+    # a `Deferred[str | None]`.
+    BodyReceivedResult
+    | Deferred[Any]
+    | Coroutine[Deferred[Any], Any, BodyReceivedResult],
 ]
 
 
@@ -194,7 +201,7 @@ class QANHelper:
         # qid -> Deferred, or None if we already gave up on the question
         # (cancelled it, or `fail_all`ed) but still expect an answer.
         self._our_questions: dict[int, Deferred[str] | None] = {}
-        self._their_questions: dict[int, Deferred[str]] = {}
+        self._their_questions: dict[int, Deferred[BodyReceivedResult]] = {}
 
     def __repr__(self) -> str:
         return (
@@ -203,8 +210,15 @@ class QANHelper:
             f"and {len(self._their_questions)} local answers>"
         )
 
-    def _send_okay_answer(self, body: str, qid: int) -> None:
+    def _send_okay_answer(self, body: BodyReceivedResult, qid: int) -> None:
         del self._their_questions[qid]
+        if not isinstance(body, str):
+            self._log_error(
+                f"The answer to peer's Question #{qid} is not a str",
+                Failure(TypeError(f"{body!r} is not a str")),
+            )
+            self._send_qan_frame(UnknownErrorAnswer("Uncaught exception", qid))
+            return
         self._send_qan_frame(OkayAnswer(body, qid))
 
     def _send_error_answer(self, failure: Failure, qid: int) -> None:
@@ -227,12 +241,12 @@ class QANHelper:
                 self._handle_answer(frame)
 
             case Notification(body):
-                try:
-                    self._body_received(body, False)
-                except Exception:
-                    self._log_error(
-                        "Peer's Notification caused uncaught exception", Failure()
+                # maybeDeferred runs (or schedules) an `async def` handler too.
+                maybeDeferred(self._body_received, body, False).addErrback(
+                    lambda failure: self._log_error(
+                        "Peer's Notification caused uncaught exception", failure
                     )
+                )
 
             case Question(body, qid):
                 if qid in self._their_questions:
@@ -241,7 +255,8 @@ class QANHelper:
                 # maybeDeferred unwraps a returned Deferred or coroutine, but its
                 # signature can't express that for a union return type.
                 d = cast(
-                    "Deferred[str]", maybeDeferred(self._body_received, body, True)
+                    "Deferred[BodyReceivedResult]",
+                    maybeDeferred(self._body_received, body, True),
                 )
                 self._their_questions[qid] = d
                 d.addCallbacks(

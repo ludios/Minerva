@@ -518,7 +518,8 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
 
 
 async def serve(reactor: IReactorCore, args: argparse.Namespace) -> None:
-    clock = cast(Clock, reactor)
+    # Every reactor provides the `Clock` protocol.
+    clock: Clock = reactor
     tracker = StreamTracker(clock, DemoFactory(clock))
     socket_factory = ServerTransportFactory(clock, tracker)
 

@@ -1,76 +1,89 @@
-# Since we're not using twistd, we need to set up logging.
-import sys
-from twisted.python import log
-log.startLogging(sys.stdout)
+"""
+Tutorial 5: questions, answers, and notifications (QAN).
 
-from twisted.web import resource, server
-from twisted.internet import reactor
+Instead of raw strings, the client and server *notify* each other, or *ask*
+questions that get answers (or error-answers).  Your protocol implements
+`minerva.QANProtocol`, wrapped in a `minerva.QANProtocolWrapper`.
 
-from minerva.mserver import WebPort, StreamTracker, QANProtocolWrapper
+Run it with `uv run python -m minerva.tutorial.standalone_5_qan`, then open
+http://127.0.0.1:10001/ in a few browser tabs.
+"""
 
-try:
-	import simplejson as json
-except ImportError:
-	import json
+import json
 
+from twisted.internet import task
+from twisted.internet.defer import Deferred
+from twisted.internet.endpoints import serverFromString
+from twisted.internet.interfaces import IReactorCore
+from twisted.web.resource import Resource
+from twisted.web.server import Request, Site
 
-def notifyJsonTo(protocol, payload):
-	protocol.qanHelper.notify(json.dumps(payload))
-
-# This is the server-side protocol where you'll receive the client's questions and notifications.
-class DemoProtocol(object):
-	def streamStarted(self, stream, qanHelper):
-		self.stream = stream
-		self.qanHelper = qanHelper
-		self.id = self.factory.clientCounter
-		self.factory.clients[self.id] = self
-
-	def streamReset(self, reasonString, applicationLevel):
-		log.msg("Stream reset: %r" % (reasonString,))
-		del self.factory.clients[self.id]
-
-	def bodyReceived(self, s, isQuestion):
-		payload = json.loads(s)
-		print "Received from client #%d: %r, isQuestion=%r" % (self.id, payload, isQuestion)
-
-		action = payload[0]
-		if action == u'broadcast':
-			_, text = payload
-			for protocol in self.factory.clients.itervalues():
-				if protocol == self:
-					notifyJsonTo(protocol, u"You told everyone: %s" % (text,))
-				else:
-					notifyJsonTo(protocol, u"Client #%d told everyone: %s" % (self.id, text))
-		elif action == u'privmsg':
-			_, recipient, text = payload
-			try:
-				protocol = self.factory.clients[recipient]
-			except KeyError:
-				notifyJsonTo(self, u"Sorry, #%d isn't connected." % (recipient,))
-			else:
-				notifyJsonTo(self, u"You told #%d: %s" % (recipient, text))
-				notifyJsonTo(protocol, u"Client #%d told you: %s" % (self.id, text))
-		elif action == u'listclients':
-			return json.dumps(self.factory.clients.keys())
+from minerva import QANHelper, QANProtocolWrapper, ServerStream, StreamTracker, WebPort
+from minerva.web import put_child
 
 
-# The factory can be used to store data and instantiate objects
-# shared by the connected protocols.
-class DemoFactory(object):
-	def __init__(self):
-		self.clientCounter = 0
-		self.clients = {}
+# The server-side protocol, where you receive the client's questions and
+# notifications.
+class DemoProtocol:
+    stream: ServerStream
+    qan_helper: QANHelper
 
-	def buildProtocol(self):
-		self.clientCounter += 1
-		protocol = DemoProtocol()
-		protocol.factory = self
-		return QANProtocolWrapper(protocol)
+    def __init__(self, factory: DemoFactory, id: int) -> None:
+        self.factory = factory
+        self.id = id
+
+    def notify_json(self, payload: object) -> None:
+        self.qan_helper.notify(json.dumps(payload))
+
+    def stream_started(self, stream: ServerStream, qan_helper: QANHelper) -> None:
+        self.stream = stream
+        self.qan_helper = qan_helper
+        self.factory.clients[self.id] = self
+
+    def stream_reset(self, reason_string: str, application_level: bool) -> None:
+        print(f"Stream reset: {reason_string!r}")
+        del self.factory.clients[self.id]
+
+    def body_received(self, body: str, is_question: bool) -> str | None:
+        """
+        Return the answer to a question.  (For notifications, the return
+        value is ignored.)
+        """
+        payload = json.loads(body)
+        print(f"Received from client #{self.id}: {payload!r}, {is_question=}")
+
+        match payload:
+            case ["broadcast", str(text)]:
+                for protocol in self.factory.clients.values():
+                    if protocol is self:
+                        protocol.notify_json(f"You told everyone: {text}")
+                    else:
+                        protocol.notify_json(f"Client #{self.id} told everyone: {text}")
+            case ["privmsg", int(recipient), str(text)]:
+                if (protocol := self.factory.clients.get(recipient)) is None:
+                    self.notify_json(f"Sorry, #{recipient} isn't connected.")
+                else:
+                    self.notify_json(f"You told #{recipient}: {text}")
+                    protocol.notify_json(f"Client #{self.id} told you: {text}")
+            case ["listclients"]:
+                return json.dumps(sorted(self.factory.clients))
+            case _:
+                self.notify_json(f"Sorry, I don't understand {payload!r}")
+        return None
 
 
-class MyDemo(resource.Resource):
-	def render_GET(self, request):
-		return r"""<!doctype html>
+# The factory can hold data and objects shared by the connected protocols.
+class DemoFactory:
+    def __init__(self) -> None:
+        self.client_counter = 0
+        self.clients: dict[int, DemoProtocol] = {}
+
+    def build_protocol(self) -> QANProtocolWrapper:
+        self.client_counter += 1
+        return QANProtocolWrapper(DemoProtocol(self, self.client_counter))
+
+
+PAGE = r"""<!doctype html>
 <div id="minerva-elements"></div> <!-- required container -->
 
 Send Unicode string to everyone:
@@ -142,23 +155,24 @@ stream.start();
 """
 
 
-class Root(resource.Resource):
-	def __init__(self, webPort):
-		resource.Resource.__init__(self)
-		self.putChild('', MyDemo())
-		self.putChild('_minerva', webPort)
+class DemoPage(Resource):
+    isLeaf = True
+
+    def render_GET(self, request: Request) -> bytes:
+        return PAGE.encode()
 
 
-def makeSite():
-	clock = reactor
-	factory = DemoFactory()
-	tracker = StreamTracker(clock, factory)
-	webPort = WebPort(clock, tracker)
-	root = Root(webPort)
-	# timeout= is twisted.web's keep-alive timeout that determines how long
-	# before the server disconnects HTTP connections with no active requests.
-	return server.Site(root, timeout=75)
+async def main(reactor: IReactorCore) -> None:
+    tracker = StreamTracker(reactor, DemoFactory())
+    root = Resource()
+    put_child(root, b"", DemoPage())
+    put_child(root, b"_minerva", WebPort(reactor, tracker))
+    # `timeout` is how long an HTTP connection without requests stays open.
+    site = Site(root, timeout=75)
+    await serverFromString(reactor, "tcp:10001:interface=127.0.0.1").listen(site)
+    print("Open http://127.0.0.1:10001/ in your browser.")
+    await Deferred()  # Serve until interrupted.
 
 
-reactor.listenTCP(10001, makeSite())
-reactor.run()
+if __name__ == "__main__":
+    task.react(main)

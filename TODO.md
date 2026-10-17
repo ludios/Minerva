@@ -143,6 +143,13 @@
 - Smoke-tested for real: HTTP long-poll (stream create, SACK, echo, reset) via
   curl, and Flash policy file + int32 echo/heartbeats via raw sockets.
 - Twisted request "queued" handling dropped (modern Twisted never queues).
+- QAN: notifications go through `maybeDeferred` too, so an `async def
+  body_received` works for them (it would otherwise never run).  A non-`str`
+  answer is logged and answered with UnknownErrorAnswer (py2: the peer got no
+  answer at all).
+- Tutorials: run with `python -m minerva.tutorial.standalone_N_...`; they use
+  `task.react` + endpoints; 4-6 dispatch JSON messages with `match`; 6 uses an
+  `async def body_received`.  Their HTML/JS pages are byte-for-byte unchanged.
 - QAN: bodies are `str`; `KnownError(body)`/`UnknownError(body)` have `.body`.
   `body_received` may return a coroutine (`async def`).  `fail_all` no longer
   crashes on already-cancelled questions (py2 called `None.errback`).
@@ -163,7 +170,7 @@
 - [x] 5. Dev site: `minerva_site` + `tap` -> `minerva/site.py` CLI; chatapp,
       dumbtest pages; test resources (SimpleResponse, UnicodeRainbow,
       NoOriginHeader, GetEndpointInfo, DisplayConnections, wait_resource).
-- [ ] 6. Tutorials (`minerva/tutorial/standalone_*.py`) -> runnable py3 scripts.
+- [x] 6. Tutorials (`minerva/tutorial/standalone_*.py`) -> runnable py3 scripts.
 - [ ] 7. Build scripts: `build_autocachebreakers.py` (port), JS build scripts
       (depend on Coreweb `_closurebuild`; port or replace), docs scripts.
 - [ ] 8. Smoke test real server: run `minerva-site`, curl HTTP transport with a

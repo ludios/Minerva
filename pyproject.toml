@@ -107,6 +107,8 @@ extend-ignore-names = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# The tutorials embed their (long-lined) HTML pages.
+"src/minerva/tutorial/*" = ["E501"]
 "tests/**" = [
     "ANN",
     "PT011",  # `pytest.raises(ValueError)` is often exactly the contract

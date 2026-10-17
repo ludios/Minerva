@@ -117,13 +117,14 @@ class QANProtocol(Protocol):
 
     def body_received(
         self, body: str, is_question: bool
-    ) -> str | Deferred[str] | Coroutine[Deferred[Any], Any, str] | None:
+    ) -> str | Deferred[Any] | Coroutine[Deferred[Any], Any, str | None] | None:
         """
         The peer asked a question or sent a notification with restricted-string
         `body`.
 
         For a question, return the answer: a restricted `str`, or a `Deferred`
-        or coroutine (e.g. make this an `async def`) that produces one.  Raise
+        or coroutine (e.g. make this an `async def`) that produces one.  For a
+        notification, the return value is ignored.  Raise
         (or errback with) `minerva.qan.KnownError(body)` to send an
         error-answer with that body.  Any other exception sends an
         uninformative "unknown error" answer.
