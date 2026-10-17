@@ -3,8 +3,9 @@ Mocks, fakes, and dummies for Minerva's tests.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Self, cast
 
 from twisted.internet.address import IPv4Address
 from twisted.internet.defer import Deferred
@@ -12,11 +13,11 @@ from twisted.internet.interfaces import IAddress
 from twisted.internet.testing import StringTransport
 from twisted.web.test.requesthelper import DummyRequest
 
-from minerva.decoders import Decoder
-from minerva.frames import ServerFrame, decode_frame_from_server
+from minerva.decoders import Decoder, Int32StringDecoder
+from minerva.frames import Frame, ServerFrame, decode_frame_from_server
 from minerva.interfaces import PausableProducer, ServerStreamLike, ServerTransportLike
 from minerva.stream import NoSuchStream, ServerStream, StreamAlreadyExists
-from minerva.transport import TransportInfo
+from minerva.transport import ServerTransport, ServerTransportFactory, TransportInfo
 from minerva.window import SACK, Incoming, Queue
 from tests.helpers import ListLog
 
@@ -113,6 +114,42 @@ class FrameDecodingTcpTransport(FakeTcpTransport):
     def write(self, data: bytes) -> None:
         super().write(data)
         self.frames.extend(map(decode_frame_from_server, self.parser.feed(data)))
+
+
+@dataclass
+class SocketPeer:
+    """
+    A `ServerTransport` in int32 (Flash socket) mode, connected to a fake TCP
+    peer that encodes and decodes frames.
+    """
+
+    transport: ServerTransport
+    tcp: FrameDecodingTcpTransport
+
+    @classmethod
+    def connect(cls, factory: ServerTransportFactory) -> Self:
+        tcp = FrameDecodingTcpTransport(Int32StringDecoder(max_length=2**20))
+        transport = factory.buildProtocol(None)
+        transport.makeConnection(tcp)
+        transport.dataReceived(b"<int32/>\n")
+        return cls(transport, tcp)
+
+    def send(self, *frames: Frame | bytes) -> None:
+        """
+        Send frames (or raw frame bytes) to the transport, all at once.
+        """
+        self.transport.dataReceived(
+            b"".join(
+                Int32StringDecoder.encode(f if isinstance(f, bytes) else f.encode())
+                for f in frames
+            )
+        )
+
+    def get_new(self) -> list[ServerFrame]:
+        """
+        The frames the transport wrote since the last call.
+        """
+        return self.tcp.get_new()
 
 
 # --- Stand-ins for Minerva's own components --------------------------------------

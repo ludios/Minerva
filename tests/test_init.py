@@ -1,15 +1,27 @@
-from twisted.trial import unittest
+import subprocess
+import sys
 
 import minerva
 
 
-class TestInit(unittest.TestCase):
+def test_version() -> None:
+    assert isinstance(minerva.__version__, str)
+    assert "." in minerva.__version__
+
+
+def test_public_api() -> None:
+    for name in minerva.__all__:
+        assert getattr(minerva, name) is not None
+
+
+def test_import_is_lazy() -> None:
     """
-    Tests for `minerva.__init__`.
+    `import minerva` doesn't import Twisted until you use the API.
     """
-    def test_version(self):
-        """
-        minerva.__version__ exists, is a str, and has a "."
-        """
-        self.assertIsInstance(minerva.__version__, str)
-        self.assertIn('.', minerva.__version__)
+    code = (
+        "import sys, minerva\n"
+        "assert 'twisted' not in sys.modules\n"
+        "minerva.StreamTracker\n"
+        "assert 'twisted' in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

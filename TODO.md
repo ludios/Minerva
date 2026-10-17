@@ -119,6 +119,21 @@
 - Hello frames: any non-ASCII *string value* (even for unknown keys) is
   rejected, as before; frames containing non-ASCII *bytes* are now invalid.
 - Decoders raise `FrameTooLong` instead of returning `(frames, TOO_LONG)`.
+- Protocols implement only `string_received(s)` (no plural `stringsReceived`).
+  An exception in `string_received` is logged per string and delivery goes on;
+  after the protocol resets the stream, the rest of the batch isn't delivered.
+- `ServerStream.reset()` validates `reason_string` (restricted, <= 255 chars).
+- `ServerStream.notify_finish()` after the stream finished returns a fired
+  Deferred (was: AttributeError on None).
+- `write_strings(queue, start)`: `start` is an int (0 = everything), not None.
+- `ServerTransportFactory(policy_string=...)` takes a `str` (was bytes `str`).
+- `XDRFrame`: bad `id`/`domain` -> 400 (was a 500 from a raised ValueError).
+  Template vars renamed (`frame_id`, `xdrframe_js_href`).
+- `htmldumps` escapes `<`, `>`, `&` as `\u003c` etc. (was only `/` -> `\/`).
+- Strings that arrive together with (before) a bad frame are delivered and
+  SACKed before the transport is killed (py2 crashed on a None stream).
+- `QANProtocolWrapper` handles a bad QAN frame (py2: NameError).
+- Twisted request "queued" handling dropped (modern Twisted never queues).
 - QAN: bodies are `str`; `KnownError(body)`/`UnknownError(body)` have `.body`.
   `body_received` may return a coroutine (`async def`).  `fail_all` no longer
   crashes on already-cancelled questions (py2 called `None.errback`).
@@ -132,9 +147,10 @@
       separate commit to keep history traceable).
 - [x] 2. Port leaf modules + tests: [x] `objcheck`, [x] `window`, [x] `decoders`,
       [x] `frames`, [x] `qan`.  Add hypothesis property tests.  ruff + ty clean.  Commit each.
-- [ ] 3. Port `mserver` -> split modules (`stream`, `transport`, `web`,
+- [x] 3. Port `mserver` -> split modules (`stream`, `transport`, `web`,
       `protocols`?), `interfaces` -> Protocols.  Port `mocks` into tests.
-- [ ] 4. Port `test_mserver` (3400 lines!) to pytest.  This is the big one.
+- [x] 4. Port `test_mserver` (3400 lines!) to pytest -> test_{stream,transport,
+      integration,web}.py.  814 tests pass in ~5s.
 - [ ] 5. Dev site: `minerva_site` + `tap` -> `minerva/site.py` CLI; chatapp,
       dumbtest pages; test resources (SimpleResponse, UnicodeRainbow,
       NoOriginHeader, GetEndpointInfo, DisplayConnections, wait_resource).
