@@ -1,237 +1,276 @@
 """
-Interfaces for Minerva.
+The interfaces between Minerva's components, and between Minerva and your
+application, as `typing.Protocol`s.
 
-All interfaces here are public.
+You implement `StringFactory` and `StringProtocol` (or `QANProtocol`, wrapped
+in a `QANProtocolWrapper`).  Your protocol can optionally implement
+`TransportCreatedListener` and/or `TransportDestroyedListener`.  Subclassing
+these protocols is not required, but lets a type checker verify your
+implementation.
+
+The other protocols describe what Minerva's own components need from each
+other; tests use them to substitute fakes.
 """
 
-from zope.interface import Interface
+from collections.abc import Callable, Coroutine
+from typing import Any, Protocol, runtime_checkable
+
+# These are only used in annotations, and import this module themselves.
+lazy from twisted.internet.defer import Deferred
+
+lazy from minerva.qan import QANHelper
+lazy from minerva.stream import ServerStream
+lazy from minerva.transport import TransportInfo
+lazy from minerva.window import SACK, Queue
+
+# --- Implemented by your application --------------------------------------------
 
 
-# A copy of twisted.internet.interfaces.IConsumer with the `write` method
-# removed.
-class IConsumerWithoutWrite(Interface):
-	"""
-	A consumer consumes data from a producer.
-	"""
-	def registerProducer(producer, streaming):
-		"""
-		Register to receive data from a producer.
+class StringProtocol(Protocol):
+    """
+    String-based communication that abstracts away the Comet logic and the
+    transports; analogous to `twisted.internet.interfaces.IProtocol`.
 
-		This sets self to be a consumer for a producer.  When this object runs
-		out of data (as when a send(2) call on a socket succeeds in moving the
-		last data from a userspace buffer into a kernelspace buffer), it will
-		ask the producer to resumeProducing().
+    Note: when you reset a stream, some (or all) of the strings you recently
+    sent may be lost.  If you need a clean close, use your own application-
+    level strings to agree that it is safe to close, then reset.
 
-		For L{IPullProducer} providers, C{resumeProducing} will be called once
-		each time data is required.
+    The simplest way to end abandoned streams is an application-level ping
+    that your client sends every ~55 seconds; reset the stream if none has
+    arrived for 2 minutes.
+    """
 
-		For L{IPushProducer} providers, C{pauseProducing} will be called
-		whenever the write buffer fills up and C{resumeProducing} will only be
-		called when it empties.
+    def stream_started(self, stream: ServerStream) -> None:
+        """
+        The `stream` for this protocol has started.  On the server, this
+        happens when the client attaches its first transport.
 
-		@type producer: L{IProducer} provider
+        You'll want to keep a reference: `self.stream = stream`.
+        """
+        ...
 
-		@type streaming: C{bool}
-		@param streaming: C{True} if C{producer} provides L{IPushProducer},
-		C{False} if C{producer} provides L{IPullProducer}.
+    def stream_reset(self, reason_string: str, application_level: bool) -> None:
+        """
+        The stream has reset, because of `ServerStream.reset`, because of a
+        reset frame from the peer, or because Minerva gave up on it.
 
-		@raise RuntimeError: If a producer is already registered.
+        `reason_string` is a restricted string.  `application_level` is true if
+        the reset was caused by an application (not Minerva internals).
+        """
+        ...
 
-		@return: C{None}
-		"""
-
-
-	def unregisterProducer():
-		"""
-		Stop consuming data from a producer, without disconnecting.
-		"""
-
-
-
-# Note: while we mention L{ServerStream} in this interface, this interface
-# is also applicable to a ClientStream written in Python.
-class IStringProtocol(Interface):
-	"""
-	An interface for string-based communication that abstracts
-	away the Comet logic and transports.
-
-	This interface is analogous to L{twisted.internet.interfaces.IProtocol}
-
-	Note: if you call stream.reset, some (or all) of the strings you
-	have recently sent may be lost.  If you need a proper close, use
-	your own application-level strings to determine that it is safe to
-	close, then call reset.
-
-	The simplest way to end dead ServerStreams is to use an application-level
-	ping message that your client application sends (say every 55 seconds),
-	and end the ServerStream if no such message has been received for
-	2 minutes.
-	"""
-
-	def streamStarted(stream):
-		"""
-		Called when the local *Stream object associated with this protocol
-		has started.  On the server, this is usually called after the client
-		attaches their first transport.  On the client, this is called when
-		you call C{stream.start()}.
-
-		You'll want to keep the stream around with C{self.stream = stream}.
-
-		@param stream: the L{ServerStream} that was started.
-		@type stream: L{ServerStream}
-		"""
+    def string_received(self, s: str) -> None:
+        """
+        A restricted string `s` arrived from the peer.
+        """
+        ...
 
 
-	def streamReset(reasonString, applicationLevel):
-		"""
-		Called when this stream has reset, either internally by
-		L{ServerStream}, or a call to ServerStream.reset, or by a reset
-		frame from the peer.
-
-		@param reasonString: The reason the stream reset.
-			String contains only bytes in inclusive range 0x20 - 0x7E.
-		@type reasonString: str
-
-		@type applicationLevel: Was the reason caused by an application (not
-			Minerva internals?)
-		"""
+class StringFactory(Protocol):
+    def build_protocol(self) -> StringProtocol:
+        """
+        Called when a `ServerStream` has been established.  Unlike Twisted's
+        `IProtocolFactory.buildProtocol`, you can't refuse it.
+        """
+        ...
 
 
-	def stringReceived(s):
-		"""
-		@param s: A restricted string from the peer.
-		@type s: C{str}
-		"""
-	del stringReceived # Because it's optional.  TODO: Interface subclass?
+@runtime_checkable
+class TransportCreatedListener(Protocol):
+    def transport_created(self, transport_info: TransportInfo) -> None:
+        """
+        A transport attached to the stream.  This is always called after
+        `stream_started`, even for the transport that started the stream.
+        """
+        ...
 
 
-	def stringsReceived(strings):
-		"""
-		NOTE: Implement `stringReceived` instead.  It's safer and simpler
-		to use.  If this method is implemented, `stringReceived` (singular)
-		will not be called.
-
-		Called whenever one or more strings are received.
-
-		If you need to, you may mutate the list and keep references to it.
-
-		This is `stringsReceived` instead of `stringReceived` only as an
-		optimization for CPython.  The number of strings you will receive at
-		once is subject to variances in TCP activity.  Do *not* rely on being
-		called with a certain number of strings.
-
-		@type strings: list
-		@param strings: a list of L{StringFragment} objects.  You can convert
-			them to C{str}s by C{str()}ing them.  Do *not* keep them around
-			in L{StringFragment} form because they may consume more
-			memory than you expect.
-		"""
-	del stringsReceived # Because it's optional.  TODO: Interface subclass?
+@runtime_checkable
+class TransportDestroyedListener(Protocol):
+    def transport_destroyed(self, transport_info: TransportInfo) -> None:
+        """
+        A transport detached from the stream.  (Not called for transports
+        that detach while the stream is resetting.)
+        """
+        ...
 
 
+class QANProtocol(Protocol):
+    """
+    Communication with questions, answers, and notifications.  Wrap your
+    implementation in a `minerva.QANProtocolWrapper`.
+    """
 
-class IStringFactory(Interface):
-	"""
-	Interface for L{IStringProtocol} factories.
-	"""
-	def buildProtocol():
-		"""
-		Called when a L{ServerStream} has been established.
+    def stream_started(self, stream: ServerStream, qan_helper: QANHelper) -> None:
+        """
+        Like `StringProtocol.stream_started`.  Keep a reference to the
+        `qan_helper` too, and use its `ask` and `notify` for all communication
+        instead of calling `stream.send_string` yourself.
+        """
+        ...
 
-		Unlike the analogous Twisted L{twisted.internet.interfaces.IFactory},
-		you cannot refuse a connection here.
+    def stream_reset(self, reason_string: str, application_level: bool) -> None:
+        """
+        Like `StringProtocol.stream_reset`.
+        """
+        ...
 
-		An implementation should
-			construct an object providing I{IStringProtocol},
-			do C{obj.factory = self},
-			and return C{obj},
-		with optionally more steps in between.
+    def body_received(
+        self, body: str, is_question: bool
+    ) -> str | Deferred[str] | Coroutine[Deferred[Any], Any, str] | None:
+        """
+        The peer asked a question or sent a notification with restricted-string
+        `body`.
 
-		@return: an object providing L{IStringProtocol}.
-		"""
-
-
-
-class IQANProtocol(Interface):
-	"""
-	An interface for string-based communication that allows for
-	question-answer-notify.
-	"""
-	def streamStarted(stream, qanHelper):
-		"""
-		Called when the local *Stream object associated with this protocol
-		has started.  On the server, this is usually called after the client
-		attaches their first transport.  On the client, this is called when
-		you call C{stream.start()}.
-
-		You'll want to keep the stream around with C{self.stream = stream}.
-		You'll want to keep the QANHelper around with C{self.qanHelper = qanHelper}.
-
-		You must not call C{stream.sendString}; use C{qanHelper.ask} or
-		C{qanHelper.notify} for all of your communication.
-
-		@param stream: the L{ServerStream} that was started.
-		@type stream: L{ServerStream}
-
-		@param qanHelper: the L{QANHelper} coupled with the L{ServerStream}.
-		@type qanHelper: L{QANHelper}
-		"""
+        For a question, return the answer: a restricted `str`, or a `Deferred`
+        or coroutine (e.g. make this an `async def`) that produces one.  Raise
+        (or errback with) `minerva.qan.KnownError(body)` to send an
+        error-answer with that body.  Any other exception sends an
+        uninformative "unknown error" answer.
+        """
+        ...
 
 
-	def streamReset(reasonString, applicationLevel):
-		"""
-		Called when this stream has reset, either internally by
-		L{ServerStream}, or a call to ServerStream.reset, or by a reset
-		frame from the peer.
-
-		@param reasonString: The reason the stream reset.
-			String contains only bytes in inclusive range 0x20 - 0x7E.
-		@type reasonString: str
-
-		@type applicationLevel: Was the reason caused by an application (not
-			Minerva internals?)
-		"""
+# --- Minerva's internal interfaces ----------------------------------------------
 
 
-	def bodyReceived(body, isQuestion):
-		"""
-		Called when a Question or Notification has been received from the peer.
+class DelayedCall(Protocol):
+    def active(self) -> bool: ...
 
-		@param body: The QAN body from the peer.  Always a restricted string.
-		@type body: C{str}
-
-		@param isQuestion: True if the QAN body arrived as a question that can
-			be answered, False if it arrived as a Notification.  If it is a question,
-			this method's return value (or Deferred) will be used as the answer.
-			Answer *must* be a restricted string C{str}.  If L{qan.KnownError}
-			is raised (or errbacked), the string value of the L{qan.KnownError}
-			will be sent as the error-answer.  If another exception is raised,
-			an uninformative unknown-error-answer will be sent to the peer.
-		@type s: C{str}
-
-		@return: If C{isQuestion}, an answer to the question.
-		@rtype: C{str} or L{Deferred} or C{None}.
-		@raise KnownError: When an error-answer is desired.
-		"""
+    def cancel(self) -> None: ...
 
 
+class Clock(Protocol):
+    """
+    The part of Twisted's `IReactorTime` that Minerva uses.  Both the reactor
+    and `twisted.internet.task.Clock` provide it.
+    """
 
-class IStreamTransportCreated(Interface):
-	def transportCreated(self, transportInfo):
-		"""
-		@param transportInfo: A L{TransportInfo} object with information
-			about the transport that was just created.
-		"""
+    def seconds(self) -> float: ...
+
+    def callLater(
+        self,
+        delay: float,
+        callable: Callable[..., object],
+        /,
+        *args: object,
+        **kw: object,
+    ) -> DelayedCall: ...
 
 
+class PausableProducer(Protocol):
+    def pauseProducing(self) -> None: ...
 
-class IStreamTransportDestroyed(Interface):
-	def transportDestroyed(self, transportInfo):
-		"""
-		@param transportInfo: A L{TransportInfo} object with information
-			about the transport that was just destroyed.
-		"""
+    def resumeProducing(self) -> None: ...
 
 
-# In the future, there might be an ITrackerTransportCreated, to watch
-# transports that never even attach to a Stream.
+class Producer(PausableProducer, Protocol):
+    """
+    A Twisted push or pull producer.
+    """
+
+    def stopProducing(self) -> None: ...
+
+
+class ServerTransportLike(Protocol):
+    """
+    What a `ServerStream` needs from a transport.
+    """
+
+    @property
+    def transport_number(self) -> int | None: ...
+
+    @property
+    def our_seq_num(self) -> int:
+        """
+        The sequence number of the last string written to the peer, or -1.
+        """
+        ...
+
+    def write_strings(self, queue: Queue, start: int) -> None:
+        """
+        Write the strings in `queue` with sequence numbers `>= start`, skipping
+        those this transport already wrote -- unless `start` is lower than it
+        was in the previous call.
+        """
+        ...
+
+    def close_gently(self) -> None:
+        """
+        Close this transport, because it is no longer useful (due to HTTP
+        limitations), or because a new primary transport has attached.
+        """
+        ...
+
+    def caused_rwin_overflow(self) -> None:
+        """
+        Close this transport, because it overflowed our receive window.  This
+        is a strong hint that the client should attach a new transport and
+        send deliverable strings.
+        """
+        ...
+
+    def write_reset(self, reason_string: str, application_level: bool) -> None:
+        """
+        Write a reset frame (which the peer may or may not receive), then
+        close.
+        """
+        ...
+
+    def registerProducer(self, producer: PausableProducer, streaming: bool) -> None: ...
+
+    def unregisterProducer(self) -> None: ...
+
+    def get_info(self) -> TransportInfo: ...
+
+
+class ServerStreamLike(Protocol):
+    """
+    What a `ServerTransport` needs from a stream.
+    """
+
+    last_received: float
+
+    @property
+    def last_sack_seen_by_server(self) -> SACK: ...
+
+    def get_sack(self) -> SACK: ...
+
+    def sack_received(self, sack: SACK) -> bool:
+        """
+        Returns `True` for a bad SACK.
+        """
+        ...
+
+    def strings_received(
+        self, transport: ServerTransportLike, pairs: list[tuple[int, str]]
+    ) -> None: ...
+
+    def reset_from_peer(self, reason_string: str, application_level: bool) -> None: ...
+
+    def transport_online(
+        self,
+        transport: ServerTransportLike,
+        wants_strings: bool,
+        succeeds_transport: int | None,
+    ) -> None: ...
+
+    def transport_offline(self, transport: ServerTransportLike) -> None: ...
+
+
+class StreamTrackerLike(Protocol):
+    """
+    What a `ServerTransport` needs from a stream tracker.
+    """
+
+    def get_stream(self, stream_id: str) -> ServerStreamLike:
+        """
+        Raises `minerva.stream.NoSuchStream`.
+        """
+        ...
+
+    def build_stream(self, stream_id: str) -> ServerStreamLike:
+        """
+        Raises `minerva.stream.StreamAlreadyExists`.
+        """
+        ...

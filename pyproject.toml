@@ -84,17 +84,24 @@ ignore = [
 # names, because Twisted (or Twisted-style producers) call them.  Everything
 # that Minerva itself owns is snake_case.
 extend-ignore-names = [
+    "abortConnection",
     "buildProtocol",
+    "callLater",
     "connectionLost",
     "connectionMade",
     "dataReceived",
     "getChild",
+    "getHost",
+    "isLeaf",
     "makeConnection",
     "pauseProducing",
     "registerProducer",
+    "requestHeaders",
     "render_GET",
     "render_POST",
+    "responseHeaders",
     "resumeProducing",
+    "setTcpNoDelay",
     "stopProducing",
     "unregisterProducer",
 ]

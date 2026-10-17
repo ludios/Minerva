@@ -44,13 +44,13 @@
 {% else %}
 
 <script>
-	document.write('<script src="' + parentUrl + '{{ cacheBreakLink("/compiled_client/xdrframe.js") }}"><\/s' + 'cript>');
+	document.write('<script src="' + parentUrl + {{ htmldumps(xdrframe_js_href) }} + '"><\/s' + 'cript>');
 </script>
 
 {% endif %}
 
 <script>
-	__xdrframe_setupXDRFrame({{ htmldumps(frameIdStr) }});
+	__xdrframe_setupXDRFrame({{ htmldumps(frame_id) }});
 </script>
 </body>
 </html>

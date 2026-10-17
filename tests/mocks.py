@@ -1,372 +1,341 @@
 """
-Mocks and dummies used by Minerva's unit tests.
-
-Everything but `MockServerStream` in this file is private.  If you need to import
-anything else, file a bug.
+Mocks, fakes, and dummies for Minerva's tests.
 """
 
-from zope.interface import implements
+from collections.abc import Callable
+from io import BytesIO
+from typing import Any, ClassVar, cast
 
-from twisted.internet import defer
+from twisted.internet.address import IPv4Address
+from twisted.internet.defer import Deferred
+from twisted.internet.interfaces import IAddress
+from twisted.internet.testing import StringTransport
+from twisted.web.test.requesthelper import DummyRequest
 
-from strfrag import StringFragment
+from minerva.decoders import Decoder
+from minerva.frames import ServerFrame, decode_frame_from_server
+from minerva.interfaces import PausableProducer, ServerStreamLike, ServerTransportLike
+from minerva.stream import NoSuchStream, ServerStream, StreamAlreadyExists
+from minerva.transport import TransportInfo
+from minerva.window import SACK, Incoming, Queue
+from tests.helpers import ListLog
 
-from minerva.window import SACK, Queue, Incoming
-from minerva.mserver import (
-	NoSuchStream, IStringProtocol, IStringFactory, StreamAlreadyExists)
-from minerva.decoders import OK
-from minerva.frames import decodeFrameFromServer
+# --- Twisted-level fakes --------------------------------------------------------
 
-from webmagic.fakes import ListLog, DummyTCPTransport
 
+class FakeTcpTransport(StringTransport):
+    """
+    A `StringTransport` with the TCP-specific methods, and producer
+    registration that behaves more like the real thing.
+    """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.aborted = False
+        self.no_delay_enabled: bool | None = None
+        self.producer: Any = None
+        self.streaming: bool | None = None
 
-def strictGetNewFrames(parser, data):
-	"""
-	Wrapper function for L{parser.getNewFrames} that checks the code
-	and throws an error if C{code != OK}.
-	"""
-	out, code = parser.getNewFrames(data)
-	if code != OK:
-		raise RuntimeError("Parse error; code was %r" % (code,))
-	return out, code
+    def registerProducer(self, producer: Any, streaming: bool) -> None:
+        if self.producer is not None:
+            raise RuntimeError("Cannot register two producers")
+        self.producer = producer
+        self.streaming = streaming
 
+    def unregisterProducer(self) -> None:
+        # Like the real thing: don't raise if no producer is registered.
+        self.producer = None
 
+    def setTcpNoDelay(self, enabled: bool) -> None:
+        self.no_delay_enabled = bool(enabled)
 
-class FrameDecodingTcpTransport(DummyTCPTransport):
-	"""
-	A TCP transport that first decodes bytes with a parser,
-	then decodes the Minerva frames with decodeFrameFromServer.
-	"""
-	def __init__(self, parser):
-		self.parser = parser
-		self.log = ListLog()
+    def abortConnection(self) -> None:
+        self.unregisterProducer()
+        self.aborted = True
+        self.disconnecting = True
 
 
-	def getNew(self):
-		return self.log.getNew()
+class FakeRequest(DummyRequest):
+    """
+    A POST request with a `body`, that records `registerProducer` calls instead
+    of pulling from the producer forever.
+    """
 
-
-	def write(self, data):
-		frames, code = strictGetNewFrames(self.parser, data)
-		self.log.extend(decodeFrameFromServer(
-			StringFragment(f, 0, len(f)) if isinstance(f, str) else f) for f in frames)
-
-
-
-class MockServerStream(object):
-	streamId = "a stream id of unusual length"
-
-	def __init__(self, clock=None, streamId=None, streamProtocolFactory=None):
-		## if streamId is None: # make a random one?
-		self._notifications = []
-		self.streamId = streamId
-		self.streamProtocolFactory = streamProtocolFactory
-		self.log = ListLog()
-		self._incoming = Incoming()
-		self.queue = Queue()
-		self._transports = set()
-		self.allSeenTransports = []
-		self.lastSackSeenByServer = SACK(-1, ())
-
-
-	def getNew(self):
-		return self.log.getNew()
-
-
-	def sendString(self, string):
-		self.log.append(['sendString', string])
-
-
-	def reset(self, reasonString):
-		self.log.append(['reset', reasonString])
-
-
-	def resetFromPeer(self, reasonString, applicationLevel):
-		self.log.append(['resetFromPeer', reasonString, applicationLevel])
-		for t in self._transports.copy():
-			t.closeGently()
-
-
-	def stringsReceived(self, transport, strings):
-		self.log.append(['stringsReceived', transport, strings])
-		self._incoming.give(strings)
-
-
-	def sackReceived(self, sack):
-		"""
-		Returns C{True} if SACK was bad, C{False} otherwise.
-		"""
-		self.log.append(['sackReceived', sack])
-		self.lastSackSeenByServer = sack
-		return self.queue.handleSACK(sack)
-
-
-	def transportOnline(self, transport, wantsStrings, succeedsTransport):
-		self.allSeenTransports.append(transport)
-		self.log.append(['transportOnline', transport, wantsStrings, succeedsTransport])
-		assert transport not in self._transports
-		self._transports.add(transport)
-
-
-	def transportOffline(self, transport):
-		self.log.append(['transportOffline', transport])
-		self._transports.remove(transport)
-
-
-	def serverShuttingDown(self, transport):
-		self.log.append(['serverShuttingDown', transport])
-
-
-	def pauseProducing(self):
-		self.log.append(['pauseProducing'])
-
-
-	def resumeProducing(self):
-		self.log.append(['resumeProducing'])
-
-
-	def stopProducing(self):
-		self.log.append(['stopProducing'])
-
-
-	def getSACK(self):
-		self.log.append(['getSACK'])
-		return self._incoming.getSACK()
-
-
-	def notifyFinish(self):
-		"""
-		Notify when finishing the request
-
-		@return: A deferred.  The deferred will be triggered when the
-		stream is finished -- always with a C{None} value.
-		"""
-		self.log.append(['notifyFinish'])
-		self._notifications.append(defer.Deferred())
-		return self._notifications[-1]
-
-
-	def _pretendFinish(self):
-		for d in self._notifications:
-			d.callback(None)
-		self._notifications = None
-
-
-
-class _MockStringProtocol(object):
-	implements(IStringProtocol)
-
-	def __init__(self, callFrom=(), callWhat=(), raiseFrom=(), raiseWhat=None):
-		assert isinstance(callFrom, tuple), callFrom
-		assert isinstance(callWhat, tuple), callWhat
-		assert isinstance(raiseFrom, tuple), raiseFrom
-
-		self._callFrom = callFrom
-		self._callWhat = callWhat
-		self._raiseFrom = raiseFrom
-		self._raiseWhat = raiseWhat
-
-
-	def _callStuff(self):
-		if 'sendString' in self._callWhat:
-			self.stream.sendString("s2cstring0")
-			self.stream.sendString("s2cstring1")
-			self.stream.sendString("s2cstring2")
-		if 'reset' in self._callWhat:
-			self.stream.reset('reset forced by mock protocol')
-
-
-	def streamStarted(self, stream):
-		self.factory.instances.add(self)
-		self.log = ListLog()
-		self.log.append(['streamStarted', stream])
-		self.stream = stream
-		if 'streamStarted' in self._callFrom:
-			self._callStuff()
-		if 'streamStarted' in self._raiseFrom:
-			raise self._raiseWhat()
-
-
-	def getNew(self):
-		return self.log.getNew()
-
-
-	def streamReset(self, reasonString, applicationLevel):
-		self.log.append(['streamReset', reasonString, applicationLevel])
-		if 'streamReset' in self._raiseFrom:
-			raise self._raiseWhat()
-
-
-
-class MockStringsProtocol(_MockStringProtocol):
-
-	def stringsReceived(self, strings):
-		self.log.append(['stringsReceived', strings])
-		if 'stringsReceived' in self._callFrom:
-			self._callStuff()
-		if 'stringsReceived' in self._raiseFrom:
-			raise self._raiseWhat()
-
-
-
-class MockStringProtocol(_MockStringProtocol):
-
-	def stringReceived(self, s):
-		self.log.append(['stringReceived', s])
-		if 'stringReceived' in self._callFrom:
-			self._callStuff()
-		if 'stringReceived' in self._raiseFrom:
-			raise self._raiseWhat()
-
-
-
-class MockStringsFactory(object):
-	implements(IStringFactory)
-
-	protocol = MockStringsProtocol
-
-	def __init__(self):
-		self.instances = set()
-
-
-	def buildProtocol(self):
-		obj = self.protocol()
-		obj.factory = self
-		return obj
-
-
-
-class MockStringFactory(object):
-	implements(IStringFactory)
-
-	protocol = MockStringProtocol
-
-	def __init__(self):
-		self.instances = set()
-
-
-	def buildProtocol(self):
-		obj = self.protocol()
-		obj.factory = self
-		return obj
-
-
-
-class DummySocketLikeTransport(object):
-	request = None
-	globalCounter = [-1]
-	ourSeqNum = -1
-	_paused = False
-
-	def __init__(self, request=None):
-		self.log = ListLog()
-		self.pretendGotHello()
-		if request:
-			self.writable = request
-			self._isHttp = True
-		else:
-			self._isHttp = False
-
-
-	def getNew(self):
-		return self.log.getNew()
-
-
-	def isHttp(self):
-		return self._isHttp
-
-
-	def pretendGotHello(self):
-		self.globalCounter[0] += 1
-		self.transportNumber = self.globalCounter[0]
-
-
-	def closeGently(self):
-		self.log.append(['closeGently'])
-
-
-	def causedRwinOverflow(self):
-		self.log.append(['causedRwinOverflow'])
-
-
-	def writeReset(self, reasonString, applicationLevel):
-		self.log.append(['writeReset', reasonString, applicationLevel])
-
-
-	def writeStrings(self, queue, start):
-		self.log.append(['writeStrings', queue, start])
-
-		lastString = self.ourSeqNum
-		for seqNum, string in queue.iterItems(start=start):
-			if lastString == -1 or lastString + 1 != seqNum:
-				pass
-				##toSend += self._encodeFrame(SeqNumFrame(seqNum))
-			##toSend += self._encodeFrame(StringFrame(string))
-			lastString = seqNum
-		self.ourSeqNum = lastString
-
-
-	def registerProducer(self, producer, streaming):
-		self.log.append(['registerProducer', producer, streaming])
-
-
-	def unregisterProducer(self):
-		self.log.append(['unregisterProducer'])
-
-
-	def pauseProducing(self):
-		self._paused = True
-
-
-	def getHost(self):
-		return None # TODO: return a real host
-
-
-	def isStreamingFromPeer(self):
-		return True
-
-
-	def isStreamingToPeer(self):
-		return True
-
-
-
-class DummyStreamTracker(object):
-
-	stream = MockServerStream
-
-	def __init__(self, clock, streamProtocolFactory, _streams):
-		self._clock = clock
-		self._streamProtocolFactory = streamProtocolFactory
-		self._streams = _streams
-
-
-	def getStream(self, streamId):
-		try:
-			return self._streams[streamId]
-		except KeyError:
-			raise NoSuchStream("I don't know about %r" % (streamId,))
-
-
-	def buildStream(self, streamId):
-		"""
-		This is missing a lot of features that are in the real L{StreamTracker}.
-		"""
-		if streamId in self._streams:
-			raise StreamAlreadyExists()
-
-		s = self.stream(self._clock, streamId, self._streamProtocolFactory)
-		self._streams[streamId] = s
-
-		d = s.notifyFinish()
-		d.addBoth(self._forgetStream, streamId)
-		return s
-
-
-	def _forgetStream(self, _ignoredNone, streamId):
-		del self._streams[streamId]
-
-
-	def countStreams(self):
-		return len(self._streams)
+    def __init__(self, body: bytes = b"") -> None:
+        super().__init__([])
+        self.method = b"POST"
+        self.content = BytesIO(body)
+        self.producers: ListLog[tuple[object, bool] | None] = ListLog()
+
+    def registerProducer(self, prod: object, s: bool) -> None:
+        self.producers.append((prod, s))
+
+    def unregisterProducer(self) -> None:
+        self.producers.append(None)
+
+    def getHost(self) -> IAddress:
+        return cast(IAddress, IPv4Address("TCP", "10.0.0.1", 80))
+
+    def written_bytes(self) -> bytes:
+        return b"".join(self.written)
+
+
+class MockProducer:
+    def __init__(self) -> None:
+        self.log: ListLog[str] = ListLog()
+
+    def get_new(self) -> list[str]:
+        return self.log.get_new()
+
+    def pauseProducing(self) -> None:
+        self.log.append("pauseProducing")
+
+    def resumeProducing(self) -> None:
+        self.log.append("resumeProducing")
+
+    def stopProducing(self) -> None:
+        self.log.append("stopProducing")
+
+
+class FrameDecodingTcpTransport(FakeTcpTransport):
+    """
+    A TCP transport that decodes what's written to it into Minerva frames.
+    """
+
+    def __init__(self, parser: Decoder) -> None:
+        super().__init__()
+        self.parser = parser
+        self.frames: ListLog[ServerFrame] = ListLog()
+
+    def get_new(self) -> list[ServerFrame]:
+        return self.frames.get_new()
+
+    def write(self, data: bytes) -> None:
+        super().write(data)
+        self.frames.extend(map(decode_frame_from_server, self.parser.feed(data)))
+
+
+# --- Stand-ins for Minerva's own components --------------------------------------
+
+
+class MockServerStream:
+    """
+    Records the calls that a `ServerTransport` makes.
+    """
+
+    def __init__(self, clock: object, stream_id: str, protocol_factory: object) -> None:
+        self.stream_id = stream_id
+        self.log: ListLog[list[Any]] = ListLog()
+        self.queue = Queue()
+        self.last_sack_seen_by_server = SACK(-1, ())
+        self.last_received = 0.0
+        self.all_seen_transports: list[ServerTransportLike] = []
+        self._incoming = Incoming()
+        self._transports: set[ServerTransportLike] = set()
+        self._notifications: list[Deferred[None]] = []
+
+    def get_new(self) -> list[list[Any]]:
+        return self.log.get_new()
+
+    def send_string(self, string: str) -> None:
+        self.log.append(["send_string", string])
+
+    def reset(self, reason_string: str) -> None:
+        self.log.append(["reset", reason_string])
+
+    def reset_from_peer(self, reason_string: str, application_level: bool) -> None:
+        self.log.append(["reset_from_peer", reason_string, application_level])
+        for t in list(self._transports):
+            t.close_gently()
+
+    def strings_received(
+        self, transport: ServerTransportLike, pairs: list[tuple[int, str]]
+    ) -> None:
+        self.log.append(["strings_received", transport, pairs])
+        self._incoming.give(pairs)
+
+    def sack_received(self, sack: SACK) -> bool:
+        self.log.append(["sack_received", sack])
+        self.last_sack_seen_by_server = sack
+        return self.queue.handle_sack(sack)
+
+    def transport_online(
+        self,
+        transport: ServerTransportLike,
+        wants_strings: bool,
+        succeeds_transport: int | None,
+    ) -> None:
+        self.all_seen_transports.append(transport)
+        self.log.append(
+            ["transport_online", transport, wants_strings, succeeds_transport]
+        )
+        assert transport not in self._transports
+        self._transports.add(transport)
+
+    def transport_offline(self, transport: ServerTransportLike) -> None:
+        self.log.append(["transport_offline", transport])
+        self._transports.remove(transport)
+
+    def get_sack(self) -> SACK:
+        return self._incoming.get_sack()
+
+    def notify_finish(self) -> Deferred[None]:
+        d: Deferred[None] = Deferred()
+        self._notifications.append(d)
+        return d
+
+
+class DummyStreamTracker:
+    """
+    A stream tracker that builds `MockServerStream`s (or another class).
+    """
+
+    def __init__(
+        self,
+        clock: object,
+        protocol_factory: object,
+        stream_class: Callable[[Any, str, Any], ServerStreamLike] = MockServerStream,
+    ) -> None:
+        self._clock = clock
+        self._protocol_factory = protocol_factory
+        self._stream_class = stream_class
+        self._streams: dict[str, Any] = {}
+
+    def get_stream(self, stream_id: str) -> Any:
+        try:
+            return self._streams[stream_id]
+        except KeyError:
+            raise NoSuchStream(f"I don't know about {stream_id!r}") from None
+
+    def build_stream(self, stream_id: str) -> Any:
+        if stream_id in self._streams:
+            raise StreamAlreadyExists(stream_id)
+        stream = self._stream_class(self._clock, stream_id, self._protocol_factory)
+        self._streams[stream_id] = stream
+        return stream
+
+    def count_streams(self) -> int:
+        return len(self._streams)
+
+
+class DummySocketLikeTransport:
+    """
+    A transport, as seen by a `ServerStream`, that records the calls it gets.
+    """
+
+    _next_transport_number: ClassVar[int] = 0
+
+    def __init__(self, transport_number: int | None = None) -> None:
+        self.log: ListLog[list[Any]] = ListLog()
+        if transport_number is None:
+            transport_number = DummySocketLikeTransport._next_transport_number
+            DummySocketLikeTransport._next_transport_number += 1
+        self.transport_number = transport_number
+        self.our_seq_num = -1
+
+    def get_new(self) -> list[list[Any]]:
+        return self.log.get_new()
+
+    def close_gently(self) -> None:
+        self.log.append(["close_gently"])
+
+    def caused_rwin_overflow(self) -> None:
+        self.log.append(["caused_rwin_overflow"])
+
+    def write_reset(self, reason_string: str, application_level: bool) -> None:
+        self.log.append(["write_reset", reason_string, application_level])
+
+    def write_strings(self, queue: Queue, start: int) -> None:
+        self.log.append(["write_strings", queue, start])
+        for seq_num, _ in queue.iter_items(start):
+            self.our_seq_num = seq_num
+
+    def registerProducer(self, producer: PausableProducer, streaming: bool) -> None:
+        self.log.append(["registerProducer", producer, streaming])
+
+    def unregisterProducer(self) -> None:
+        self.log.append(["unregisterProducer"])
+
+    def get_info(self) -> TransportInfo:
+        return TransportInfo(
+            transport_number=self.transport_number,
+            is_primary=False,
+            streaming_from_peer=True,
+            streaming_to_peer=True,
+            host=cast(IAddress, IPv4Address("TCP", "127.0.0.1", 0)),
+        )
+
+
+# --- String protocols -------------------------------------------------------------
+
+
+class MockStringProtocol:
+    """
+    Records the calls it gets, and can be told to call `send_string` or
+    `reset` on its stream, or raise, from some of them.
+    """
+
+    def __init__(
+        self,
+        factory: MockStringFactory,
+        call_from: tuple[str, ...] = (),
+        call_what: tuple[str, ...] = (),
+        raise_from: tuple[str, ...] = (),
+        raise_what: type[Exception] = ZeroDivisionError,
+    ) -> None:
+        self.factory = factory
+        self.log: ListLog[list[Any]] = ListLog()
+        self.stream: ServerStream | None = None
+        self._call_from = call_from
+        self._call_what = call_what
+        self._raise_from = raise_from
+        self._raise_what = raise_what
+
+    def get_new(self) -> list[list[Any]]:
+        return self.log.get_new()
+
+    def _act(self, method: str) -> None:
+        if method in self._call_from:
+            assert self.stream is not None
+            if "send_string" in self._call_what:
+                for s in ("s2cstring0", "s2cstring1", "s2cstring2"):
+                    self.stream.send_string(s)
+            if "reset" in self._call_what:
+                self.stream.reset("reset forced by mock protocol")
+        if method in self._raise_from:
+            raise self._raise_what()
+
+    def stream_started(self, stream: ServerStream) -> None:
+        self.factory.instances.append(self)
+        self.log.append(["stream_started", stream])
+        self.stream = stream
+        self._act("stream_started")
+
+    def stream_reset(self, reason_string: str, application_level: bool) -> None:
+        self.log.append(["stream_reset", reason_string, application_level])
+        self._act("stream_reset")
+
+    def string_received(self, s: str) -> None:
+        self.log.append(["string_received", s])
+        self._act("string_received")
+
+
+class MockStringFactory:
+    """
+    Builds `MockStringProtocol`s, passing `protocol_kwargs` along.
+    """
+
+    def __init__(self, **protocol_kwargs: Any) -> None:
+        self.instances: list[MockStringProtocol] = []
+        self._protocol_kwargs = protocol_kwargs
+
+    def build_protocol(self) -> MockStringProtocol:
+        return MockStringProtocol(self, **self._protocol_kwargs)
+
+    @property
+    def instance(self) -> MockStringProtocol:
+        """
+        The only protocol built so far (that started).
+        """
+        [instance] = self.instances
+        return instance
