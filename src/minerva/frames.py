@@ -1,733 +1,523 @@
 """
-Frame encoders and decoders for each frame type.  Note that we have encoders
-for frames that the server does not use; it's for testing, and in case someone
-wants to write a Python Minerva client.
+Minerva frames, and their wire encodings.
+
+A frame is ASCII text whose *last* character determines its type.  There are
+encoders for frames the server never sends (and decoders for frames it never
+receives): they're used by the tests, and would be needed by a Python client.
+
+Design note: frames that carry arbitrary text use a non-`[A-Za-z]` type
+character, so that frames can't accidentally form words that proxies block.
 """
 
-import re
-import sys
-import operator
-from simplejson import dumps
-from simplejson.decoder import JSONDecodeError
+import json
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from enum import IntEnum, StrEnum
+from typing import Any, ClassVar, Self
 
 from minerva.objcheck import (
-	ensureBool, ensureNonNegIntLimit, strToNonNegLimit, strToIntInRange)
-from strfrag import StringFragment
-from minerva.mutils import strictDecoder, StrictDecodeError
+    ensure_bool,
+    ensure_non_neg_int_limit,
+    str_to_int_in_range,
+    str_to_non_neg_limit,
+)
 from minerva.window import SACK
 
-_postImportVars = vars().keys()
-
-
-class attrdict(dict):
-	"""
-	A dict that can be modified by setting and getting attributes.
-	This may be broken in funny ways; use with care.
-	"""
-	__slots__ = ()
-
-	def __setattr__(self, key, value):
-		self[key] = value
-
-
-	def __getattribute__(self, key):
-		return self[key]
-
-
-
-# Property key names for the hello frame.
-class HelloFrameArguments(object):
-	transportNumber = 'tnum'
-	protocolVersion = 'ver'
-	httpFormat = 'format'
-	requestNewStream = 'new'
-	streamId = 'id'
-	streamingResponse = 'ming'
-	needPaddingBytes = 'pad'
-	maxReceiveBytes = 'maxb'
-	maxOpenTime = 'maxt'
-	maxInactivity = 'maxia'
-	useMyTcpAcks = 'tcpack'
-	succeedsTransport = 'eeds'
-	sack = 'sack'
-	lastSackSeenByClient = 'seenack'
-
-
-
-# Make globals that refbinder can optimize away
-_hfa = HelloFrameArguments
-Hello_transportNumber = _hfa.transportNumber
-Hello_protocolVersion = _hfa.protocolVersion
-Hello_httpFormat = _hfa.httpFormat
-Hello_requestNewStream = _hfa.requestNewStream
-Hello_streamId = _hfa.streamId
-Hello_streamingResponse = _hfa.streamingResponse
-Hello_needPaddingBytes = _hfa.needPaddingBytes
-Hello_maxReceiveBytes = _hfa.maxReceiveBytes
-Hello_maxOpenTime = _hfa.maxOpenTime
-Hello_maxInactivity = _hfa.maxInactivity
-Hello_useMyTcpAcks = _hfa.useMyTcpAcks
-Hello_succeedsTransport = _hfa.succeedsTransport
-Hello_sack = _hfa.sack
-Hello_lastSackSeenByClient = _hfa.lastSackSeenByClient
-del _hfa
-
-
-FORMAT_XHR, FORMAT_HTMLFILE = 2, 3
+# The largest integer that JavaScript can represent exactly; also the limit
+# for sequence numbers and transport numbers.
+MAX_SAFE_INT = 2**53
 
 
 class InvalidFrame(Exception):
-	pass
-
+    pass
 
 
 class InvalidHello(InvalidFrame):
-	pass
-
-
-
-class CannotEncode(Exception):
-	pass
-
-
-
-def helloDataToHelloFrame(helloData):
-	"""
-	Convert arbitrary JSON-decoded blob of objects into a L{HelloFrame}.
-	Raises L{InvalidHello} if there were errors in the blob of objects.
-	"""
-	if not isinstance(helloData, dict):
-		raise InvalidHello("helloData not a dict")
-
-	# simplejson without speedups will always give us unicode instead of str
-	# objects.  (With speedups, it gives you a str when possible.)
-	for k, v in helloData.iteritems():
-		if isinstance(v, unicode):
-			try:
-				helloData[k] = v.encode('ascii')
-			except UnicodeEncodeError:
-				raise InvalidHello("could not encode value for key "
-					"%r to ascii; was %r" % (k, v))
-
-	obj = attrdict()
-
-	# sack is always optional.
-	if Hello_sack in helloData:
-		try:
-			sack = helloData[Hello_sack]
-			if not isinstance(sack, str):
-				raise TypeError
-			obj.sack = sackStringToSack(sack)
-		except (KeyError, TypeError, InvalidSackString):
-			raise InvalidHello("bad sack")
-	else:
-		obj.sack = None
-
-	try:
-		lastSackSeen = helloData[Hello_lastSackSeenByClient]
-		if not isinstance(lastSackSeen, str):
-			raise TypeError
-		obj.lastSackSeenByClient = sackStringToSack(lastSackSeen)
-	except (KeyError, TypeError, InvalidSackString):
-		raise InvalidHello("bad lastSackSeenByClient")
-
-	try:
-		# Any line here can raise KeyError; additional exceptions marked with 'e:'
-
-		# requestNewStream is always optional.  If missing or False/0,
-		# transport is intended to attach to an existing stream.
-		obj.requestNewStream = ensureBool( # e: ValueError
-			helloData[Hello_requestNewStream]) if \
-			Hello_requestNewStream in helloData else False
-
-		obj.transportNumber = ensureNonNegIntLimit( # e: ValueError, TypeError
-			helloData[Hello_transportNumber], 2**53)
-
-		obj.protocolVersion = helloData[Hello_protocolVersion]
-
-		obj.streamingResponse = ensureBool( # e: ValueError
-			helloData[Hello_streamingResponse])
-
-		# Rules for streamId: must be 20-30 inclusive bytes, must not
-		# contain codepoints > 127
-		obj.streamId = helloData[Hello_streamId]
-		if not isinstance(obj.streamId, str) or not 20 <= len(obj.streamId) <= 30:
-			raise InvalidHello("bad streamId")
-	except (KeyError, TypeError, ValueError):
-		raise InvalidHello(
-			"problem with requestNewStream, transportNumber, "
-			"protocolVersion, streamingResponse, or streamId")
-
-	if obj.protocolVersion != 2:
-		raise InvalidHello("bad protocolVersion")
-
-	# Hello_succeedsTransport is always optional.  If missing, the client does not
-	# want to get S2C strings over this transport.  If None, the client does,
-	# but the transport does not succeed an existing primary transport.  If a
-	# number, the transport might succeed an existing primary transport.
-	if Hello_succeedsTransport in helloData:
-		obj.succeedsTransport = helloData[Hello_succeedsTransport]
-		if obj.succeedsTransport is not None:
-			try:
-				obj.succeedsTransport = ensureNonNegIntLimit(
-					obj.succeedsTransport, 2**53)
-			except (TypeError, ValueError):
-				raise InvalidHello("bad succeedsTransport")
-
-	try:
-		obj.httpFormat = helloData[Hello_httpFormat]
-		if not obj.httpFormat in (FORMAT_XHR, FORMAT_HTMLFILE):
-			raise InvalidHello("bad httpFormat")
-	except KeyError:
-		obj.httpFormat = None
-
-	# needPaddingBytes is always optional.  If missing, 0.
-	if Hello_needPaddingBytes in helloData:
-		try:
-			obj.needPaddingBytes = ensureNonNegIntLimit(
-				helloData[Hello_needPaddingBytes], 16*1024) # e: ValueError, TypeError
-		except (TypeError, ValueError):
-			raise InvalidHello("bad needPaddingBytes")
-	else:
-		obj.needPaddingBytes = 0
-
-	# maxReceiveBytes is optional.  If missing, no limit.
-	try:
-		obj.maxReceiveBytes = ensureNonNegIntLimit(
-			helloData[Hello_maxReceiveBytes], 2**53) # e: ValueError, TypeError
-	except KeyError:
-		obj.maxReceiveBytes = 2**53
-	except (TypeError, ValueError):
-		raise InvalidHello("bad maxReceiveBytes")
-
-	# maxOpenTime is optional.  If missing, no limit.
-	# Time is in seconds.
-	try:
-		obj.maxOpenTime = ensureNonNegIntLimit(
-			helloData[Hello_maxOpenTime], 2**53) # e: ValueError, TypeError
-	except KeyError:
-		obj.maxOpenTime = None
-	except (TypeError, ValueError):
-		raise InvalidHello("bad maxOpenTime")
+    pass
 
-	# maxInactivity is required.  If 0, no heartbeat.
-	# Time is in seconds.
-	try:
-		obj.maxInactivity = ensureNonNegIntLimit(
-			helloData[Hello_maxInactivity], 600) # e: ValueError, TypeError
-	except (KeyError, TypeError, ValueError):
-		raise InvalidHello("bad maxInactivity")
-
-	return HelloFrame(obj)
-
 
+def is_restricted_string(s: str) -> bool:
+    """
+    Is every character of `s` within the inclusive range `" "` - `"~"`?
 
-# The other frame classes are a tuple; this one is not, and some users
-# like L{mserver.sanitizeHelloFrame} do mutate it.
-class HelloFrame(object):
+    Minerva strings are restricted to these characters.
+    """
+    # For ASCII, "printable" is exactly 0x20 (space) to 0x7E (~).
+    return s.isascii() and s.isprintable()
 
-	def __init__(self, obj):
-		self.__dict__ = obj
 
+def sack_to_string(sack: SACK) -> str:
+    return ",".join(map(str, sack.sack_list)) + "|" + str(sack.ack_number)
 
-	def __eq__(self, other):
-		return False if type(self) != type(other) else self.__dict__ == other.__dict__
 
-
-	def __ne__(self, other):
-		return True if type(self) != type(other) else self.__dict__ != other.__dict__
-
-
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self.__dict__)
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "H".
-		"""
-		try:
-			# Reach into the private attributes, we know what we're doing.
-			helloData, stoppedAt = strictDecoder.raw_decode(
-				frameString._string, frameString._pos)
-		except (JSONDecodeError, StrictDecodeError, RuntimeError):
-			# Note: RuntimeError raised if stack overflows
-			raise InvalidHello("corrupt JSON")
-		# `- 1` because we expect to stop before the trailing "H"
-		if stoppedAt != frameString._pos + frameString.size - 1:
-			raise InvalidHello("trailing garbage")
-
-		return helloDataToHelloFrame(helloData)
-
-
-	def _yieldMapping(self):
-		for k, v in self.__dict__.iteritems():
-			argByte = getattr(HelloFrameArguments, k, None)
-			if argByte is None:
-				raise CannotEncode("Don't know argByte for %r" % (k,))
-			# We allow the user to pass either a string or a SACK,
-			# hopefully they'll pass a SACK.
-			if isinstance(v, SACK):
-				yield argByte, SackFrame(v).encode()[:-1]
-			else:
-				yield argByte, v
-
-
-	def encode(self):
-		return dumps(dict(self._yieldMapping()), separators=(',', ':'), allow_nan=False) + 'H'
-
-
-	def wantsStrings(self):
-		"""
-		Returns a C{bool} indicating whether this HelloFrame indicates that
-		client wants to receive strings.
-		"""
-		return hasattr(self, 'succeedsTransport')
-
-
-
-class StringFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	string = property(operator.itemgetter(1))
-
-	def __new__(cls, string):
-		"""
-		C{string} is a L{StringFragment} or C{str}.  Note: a StringFrame
-		instantiated with a L{StringFragment} is unequal to one with a
-		C{str}, even if they represent the same string.
-		"""
-		if not isinstance(string, StringFragment):
-			string = StringFragment(string, 0, len(string))
-		return tuple.__new__(cls, (cls._MARKER, string))
-
-
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, str(self[1]))
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with " ".
-
-		Restricted string validation is not performed here, to accomodate
-		a future extension that allows expanding the allowed byte/char
-		range mid-stream.
-		"""
-		return cls(frameString[:-1])
-
-
-	def encode(self):
-		return str(self.string) + ' '
-
-
-
-class CommentFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	comment = property(operator.itemgetter(1))
-
-	def __new__(cls, comment):
-		"""
-		C{comment} is a C{str}.
-		"""
-		return tuple.__new__(cls, (cls._MARKER, comment))
-
-
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self[1])
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "^".
-		"""
-		return cls(str(frameString[:-1]))
-
-
-	def encode(self):
-		return str(self.comment) + '^'
-
-
-
-class SeqNumFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	seqNum = property(operator.itemgetter(1))
-
-	def __new__(cls, seqNum):
-		"""
-		C{seqNum} is an L{int} or L{long}.
-		"""
-		return tuple.__new__(cls, (cls._MARKER, seqNum))
-
-
-	def __repr__(self):
-		return '%s(%d)' % (self.__class__.__name__, self[1])
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "N".
-		"""
-		try:
-			seqNum = strToNonNegLimit(str(frameString[:-1]), 2**53)
-		except ValueError:
-			raise InvalidFrame("bad seqNum")
-		return cls(seqNum)
-
-
-	def encode(self):
-		return '%dN' % self.seqNum
-
-
-
-class InvalidSackString(Exception):
-	pass
-
-
-
-def sackStringToSack(sackString):
-	"""
-	C{sackString} is a C{str}.  Returns a L{window.SACK}.
-	"""
-	try:
-		# If not enough args for split, Python raises ValueError
-		joinedSackList, ackNumberStr = sackString.rsplit('|', 1)
-		ackNumber = strToIntInRange(ackNumberStr, -1, 2**53)
-		sackList = tuple(strToNonNegLimit(s, 2**53) for s in joinedSackList.split(',')) if joinedSackList else ()
-	except ValueError:
-		raise InvalidSackString("bad sack")
-	return SACK(ackNumber, sackList)
-
-
-def sackToSackString(sack):
-	"""
-	C{sack} is a L{window.SACK}.  Returns a C{str}.
-	"""
-	return ','.join(str(s) for s in sack.sackList) + '|' + str(sack.ackNumber)
-
-
-class SackFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	sack = property(operator.itemgetter(1))
-
-	def __new__(cls, sack):
-		"""
-		C{sack} is a {window.SACK}
-		"""
-		assert isinstance(sack, SACK), type(sack)
-		return tuple.__new__(cls, (cls._MARKER, sack))
-
-
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self[1])
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "A".
-		"""
-		try:
-			return cls(sackStringToSack(str(frameString[:-1])))
-		except InvalidSackString:
-			raise InvalidFrame("bad sackList or ackNumber")
-
-
-	def encode(self):
-		return sackToSackString(self.sack) + 'A'
-
-
-
-class StreamStatusFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	lastSackSeen = property(operator.itemgetter(1))
-
-	def __new__(cls, lastSackSeen):
-		"""
-		C{lastSackSeen} is a {window.SACK}
-		"""
-		assert isinstance(lastSackSeen, SACK), type(lastSackSeen)
-		return tuple.__new__(cls, (cls._MARKER, lastSackSeen))
-
-
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self[1])
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "A".
-		"""
-		try:
-			return cls(sackStringToSack(str(frameString[:-1])))
-		except InvalidSackString:
-			raise InvalidFrame("bad sackList or ackNumber")
-
-
-	def encode(self):
-		return sackToSackString(self.lastSackSeen) + 'T'
-
-
-
-class StreamCreatedFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	def __new__(cls):
-		"""
-		No arguments.
-		"""
-		return tuple.__new__(cls, (cls._MARKER,))
-
-
-	def __repr__(self):
-		return '%s()' % (self.__class__.__name__,)
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "C".
-		"""
-		if len(frameString) != 1:
-			raise InvalidFrame("leading garbage")
-		return cls()
-
-
-	def encode(self):
-		return 'C'
-
-
-
-class YouCloseItFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	def __new__(cls):
-		"""
-		No arguments.
-		"""
-		return tuple.__new__(cls, (cls._MARKER,))
-
-
-	def __repr__(self):
-		return '%s()' % (self.__class__.__name__,)
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "Y".
-		"""
-		if len(frameString) != 1:
-			raise InvalidFrame("leading garbage")
-		return cls()
-
-
-	def encode(self):
-		return 'Y'
-
-
-
-RESTRICTED_STRING_RE = re.compile(r"\A[ -~]*\Z")
-
-def isRestrictedString(string):
-	"""
-	Return C{True} if C{str} C{string}'s bytes are within inclusive
-	range 0x20 " " - 0x7E "~"
-
-	@param string: The string to validate.
-	@type string: C{str} or C{buffer}
-	"""
-	return not not RESTRICTED_STRING_RE.match(string)
-
-
-class ResetFrame(tuple):
-	"""
-	A reset frame indicates this side has given up on the stream.
-	A reset frame from the server implies a transport kill as well.
-	"""
-	__slots__ = ()
-	_MARKER = object()
-
-	reasonString = property(operator.itemgetter(1))
-	applicationLevel = property(operator.itemgetter(2))
-
-	def __new__(cls, reasonString, applicationLevel):
-		"""
-		@param reasonString: why the stream reset.
-			ASCII (0x20-0x7E)-only C{str}, max 255 bytes.
-		"""
-		return tuple.__new__(cls, (cls._MARKER, reasonString, applicationLevel))
-
-
-	def __repr__(self):
-		return '%s(%r, %r)' % (self.__class__.__name__, self[1], self[2])
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "!".
-		"""
-		reasonString, applicationLevelStr = str(frameString[:-1]).rsplit('|', 1)
-		try:
-			applicationLevel = {'0': False, '1': True}[applicationLevelStr]
-		except KeyError:
-			raise InvalidFrame("bad applicationLevel")
-		if len(reasonString) > 255 or not isRestrictedString(reasonString):
-			raise InvalidFrame("reasonString too long or has illegal bytes")
-
-		return cls(reasonString, applicationLevel)
-
-
-	def encode(self):
-		return self.reasonString + '|' + str(int(self.applicationLevel)) + '!'
-
-
-
-class TransportKillFrame(tuple):
-	__slots__ = ()
-	_MARKER = object()
-
-	reason = property(operator.itemgetter(1))
-
-	# No such stream
-	stream_attach_failure = "stream_attach_failure"
-
-	# Peer acked strings that we never sent
-	acked_unsent_strings = "acked_unsent_strings"
-
-	# Peer sent frames that we don't understand
-	invalid_frame_type_or_arguments = "invalid_frame_type_or_arguments"
-
-	# Peer sent data that could not even be decoded to frames
-	# (only applies to some decoders).
-	frame_corruption = "frame_corruption"
-
-	# Peer has caused our receive window to overflow
-	rwin_overflow = "rwin_overflow"
-
-	allReasons = set([
-		stream_attach_failure, acked_unsent_strings,
-		invalid_frame_type_or_arguments, frame_corruption,
-		rwin_overflow])
-
-	def __new__(cls, reason):
-		"""
-		@param reason: a valid transport kill reason
-		@type reason: str
-		"""
-		return tuple.__new__(cls, (cls._MARKER, reason))
-
-
-	def __repr__(self):
-		return '%s(%r)' % (self.__class__.__name__, self[1])
-
-
-	@classmethod
-	def decode(cls, frameString):
-		"""
-		C{frameString} is a L{StringFragment} that ends with "K".
-		"""
-		string = str(frameString[:-1])
-		if not string in cls.allReasons:
-			raise InvalidFrame("unknown kill reason %r" % string)
-
-		return cls(string)
-
-
-	def encode(self):
-		return self.reason + 'K'
-
-
-# A readable mapping for your reference:
-#	'H': HelloFrame,
-#	' ': StringFrame,
-#	'N': SeqNumFrame,
-#	'A': SackFrame,
-#	'C': StreamCreatedFrame,
-#	'Y': YouCloseItFrame,
-#	'P': CommentFrame,
-#	'!': ResetFrame,
-#	'K': TransportKillFrame,
-
-# Design note: for frames that carry arbitrary text, use a non-[A-Za-z]
-# character, to avoid accidentally forming words that proxies may block.
-
-
-def decodeFrameFromClient(frameString):
-	"""
-	Decode a frame received from a Minerva client.
-	C{frameString} is a L{StringFragment}.
-	"""
-	try:
-		lastByte = frameString[-1]
-	except IndexError:
-		raise InvalidFrame("0-length frame")
-
-	# Keep this ordered by most-probable first
-	if lastByte == " ":
-		return StringFrame.decode(frameString)
-	elif lastByte == "A":
-		return SackFrame.decode(frameString)
-	elif lastByte == "N":
-		return SeqNumFrame.decode(frameString)
-	elif lastByte == "H":
-		return HelloFrame.decode(frameString)
-	elif lastByte == "!":
-		return ResetFrame.decode(frameString)
-	else:
-		raise InvalidFrame("Invalid frame type %r" % lastByte)
-
-
-def decodeFrameFromServer(frameString):
-	"""
-	Decode a frame received from a Minerva server.
-	C{frameString} is a L{StringFragment}.
-	"""
-	try:
-		lastByte = frameString[-1]
-	except IndexError:
-		raise InvalidFrame("0-length frame")
-
-	# Keep this ordered by most-probable first
-	if lastByte == " ":
-		return StringFrame.decode(frameString)
-	elif lastByte == "A":
-		return SackFrame.decode(frameString)
-	elif lastByte == "N":
-		return SeqNumFrame.decode(frameString)
-	elif lastByte == "T":
-		return StreamStatusFrame.decode(frameString)
-	elif lastByte == "Y":
-		return YouCloseItFrame.decode(frameString)
-	elif lastByte == "^":
-		return CommentFrame.decode(frameString)
-	elif lastByte == "C":
-		return StreamCreatedFrame.decode(frameString)
-	elif lastByte == "!":
-		return ResetFrame.decode(frameString)
-	elif lastByte == "K":
-		return TransportKillFrame.decode(frameString)
-	else:
-		raise InvalidFrame("Invalid frame type %r" % lastByte)
-
-
-try: from refbinder.api import bindRecursive
-except ImportError: pass
-else: bindRecursive(sys.modules[__name__], _postImportVars)
+def sack_from_string(s: str) -> SACK:
+    """
+    Parse the output of `sack_to_string`.  Raises `ValueError` if malformed.
+    """
+    joined_sack_list, sep, ack_number = s.rpartition("|")
+    if not sep:
+        raise ValueError(f"no '|' in SACK string {s!r}")
+    return SACK(
+        str_to_int_in_range(ack_number, -1, MAX_SAFE_INT),
+        tuple(
+            str_to_non_neg_limit(n, MAX_SAFE_INT) for n in joined_sack_list.split(",")
+        )
+        if joined_sack_list
+        else (),
+    )
+
+
+class HttpFormat(IntEnum):
+    XHR = 2
+    HTMLFILE = 3
+
+
+def _strict_json_loads(s: str) -> Any:
+    """
+    Decode JSON, rejecting leading whitespace, trailing garbage, and the
+    non-standard `NaN`, `Infinity`, and `-Infinity`.
+    """
+
+    def reject_constant(name: str) -> None:
+        raise ValueError(f"{name} is not allowed")
+
+    value, end = json.JSONDecoder(parse_constant=reject_constant).raw_decode(s)
+    if end != len(s):
+        raise ValueError(f"{len(s) - end} trailing characters after JSON")
+    return value
+
+
+# Marks a required field in `_parse_field`.
+_REQUIRED = sentinel("_REQUIRED")
+
+
+def _parse_field[T, D](
+    data: Mapping[str, Any],
+    key: str,
+    parse: Callable[[Any], T],
+    default: D | _REQUIRED = _REQUIRED,
+) -> T | D:
+    """
+    Parse `data[key]` with `parse`, converting any problem into `InvalidHello`.
+    """
+    if key not in data:
+        if default is _REQUIRED:
+            raise InvalidHello(f"missing {key!r}")
+        return default
+    try:
+        return parse(data[key])
+    except (TypeError, ValueError) as e:
+        raise InvalidHello(f"bad {key!r}: {e}") from None
+
+
+def _parse_sack(value: object) -> SACK:
+    if not isinstance(value, str):
+        raise TypeError(f"{value!r} is not a str")
+    return sack_from_string(value)
+
+
+def _parse_stream_id(value: object) -> str:
+    if not isinstance(value, str) or not 20 <= len(value) <= 30:
+        raise ValueError(f"{value!r} is not a 20-30 character str")
+    return value
+
+
+def _parse_protocol_version(value: object) -> int:
+    if value != 2:
+        raise ValueError(f"unsupported protocol version {value!r}")
+    return 2
+
+
+def _non_neg_int_up_to(limit: int) -> Callable[[object], int]:
+    return lambda value: ensure_non_neg_int_limit(value, limit)
+
+
+def _parse_optional_transport_number(value: object) -> int | None:
+    return None if value is None else ensure_non_neg_int_limit(value, MAX_SAFE_INT)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HelloFrame:
+    """
+    The first frame a client sends over every transport.
+    """
+
+    TYPE: ClassVar[str] = "H"
+
+    transport_number: int
+    stream_id: str
+    streaming_response: bool
+    # Seconds of S2C inactivity after which the server sends a heartbeat; 0
+    # disables heartbeats.
+    max_inactivity: int
+    last_sack_seen_by_client: SACK
+    protocol_version: int = 2
+    # If false, the transport wants to attach to an existing stream.
+    request_new_stream: bool = False
+    # Does the client want to receive strings over this transport?
+    wants_strings: bool = False
+    # If the client wants strings, maybe the transport this one replaces.
+    succeeds_transport: int | None = None
+    http_format: HttpFormat | None = None
+    need_padding_bytes: int = 0
+    max_receive_bytes: int = MAX_SAFE_INT
+    # In seconds; `None` means no limit.
+    max_open_time: int | None = None
+    sack: SACK | None = None
+
+    def to_json_dict(self) -> dict[str, Any]:
+        """
+        Return the JSON object that this frame is encoded as.  (See
+        `from_json_dict` for the wire names of the fields.)
+        """
+        data: dict[str, Any] = {
+            "tnum": self.transport_number,
+            "ver": self.protocol_version,
+            "new": self.request_new_stream,
+            "id": self.stream_id,
+            "ming": self.streaming_response,
+            "pad": self.need_padding_bytes,
+            "maxb": self.max_receive_bytes,
+            "maxia": self.max_inactivity,
+            "seenack": sack_to_string(self.last_sack_seen_by_client),
+        }
+        # Optional fields are omitted rather than sent as `null`, because
+        # `null` means something else (or is invalid) for them.
+        if self.wants_strings:
+            data["eeds"] = self.succeeds_transport
+        if self.http_format is not None:
+            data["format"] = int(self.http_format)
+        if self.max_open_time is not None:
+            data["maxt"] = self.max_open_time
+        if self.sack is not None:
+            data["sack"] = sack_to_string(self.sack)
+        return data
+
+    def encode(self) -> bytes:
+        return encode_hello_json(self.to_json_dict())
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        """
+        Decode `text`, which ends with "H".  Raises `InvalidHello` for
+        anything other than a well-formed hello frame.
+        """
+        try:
+            data = _strict_json_loads(text[:-1])
+        except ValueError, RecursionError:
+            # RecursionError is raised for very deeply nested JSON.
+            raise InvalidHello("corrupt JSON") from None
+        return cls.from_json_dict(data)
+
+    @classmethod
+    def from_json_dict(cls, data: object) -> Self:
+        if not isinstance(data, dict):
+            raise InvalidHello("hello is not a JSON object")
+        if any(isinstance(v, str) and not v.isascii() for v in data.values()):
+            raise InvalidHello("hello contains a non-ASCII string")
+
+        return cls(
+            transport_number=_parse_field(
+                data, "tnum", _non_neg_int_up_to(MAX_SAFE_INT)
+            ),
+            protocol_version=_parse_field(data, "ver", _parse_protocol_version),
+            stream_id=_parse_field(data, "id", _parse_stream_id),
+            streaming_response=_parse_field(data, "ming", ensure_bool),
+            max_inactivity=_parse_field(data, "maxia", _non_neg_int_up_to(600)),
+            last_sack_seen_by_client=_parse_field(data, "seenack", _parse_sack),
+            request_new_stream=_parse_field(data, "new", ensure_bool, default=False),
+            # The *presence* of "eeds" means that the client wants strings.
+            wants_strings="eeds" in data,
+            succeeds_transport=_parse_field(
+                data, "eeds", _parse_optional_transport_number, default=None
+            ),
+            http_format=_parse_field(data, "format", HttpFormat, default=None),
+            need_padding_bytes=_parse_field(
+                data, "pad", _non_neg_int_up_to(16 * 1024), default=0
+            ),
+            max_receive_bytes=_parse_field(
+                data, "maxb", _non_neg_int_up_to(MAX_SAFE_INT), default=MAX_SAFE_INT
+            ),
+            max_open_time=_parse_field(
+                data, "maxt", _non_neg_int_up_to(MAX_SAFE_INT), default=None
+            ),
+            sack=_parse_field(data, "sack", _parse_sack, default=None),
+        )
+
+
+def encode_hello_json(data: Mapping[str, Any]) -> bytes:
+    """
+    Encode a hello frame from a raw JSON object.  Tests use this to send
+    invalid hello frames.
+    """
+    return (
+        json.dumps(data, separators=(",", ":"), allow_nan=False).encode("ascii") + b"H"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StringFrame:
+    """
+    A Minerva string.  Restricted-string validation is done by the receiver,
+    not here, to allow for a future extension that widens the allowed range
+    mid-stream.
+    """
+
+    TYPE: ClassVar[str] = " "
+
+    string: str
+
+    def encode(self) -> bytes:
+        return (self.string + self.TYPE).encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        return cls(text[:-1])
+
+
+@dataclass(frozen=True, slots=True)
+class CommentFrame:
+    TYPE: ClassVar[str] = "^"
+
+    comment: str
+
+    def encode(self) -> bytes:
+        return (self.comment + self.TYPE).encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        return cls(text[:-1])
+
+
+@dataclass(frozen=True, slots=True)
+class SeqNumFrame:
+    """
+    Sets the sequence number of the next `StringFrame`.
+    """
+
+    TYPE: ClassVar[str] = "N"
+
+    seq_num: int
+
+    def encode(self) -> bytes:
+        return f"{self.seq_num}{self.TYPE}".encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        try:
+            return cls(str_to_non_neg_limit(text[:-1], MAX_SAFE_INT))
+        except ValueError:
+            raise InvalidFrame("bad seqNum") from None
+
+
+@dataclass(frozen=True, slots=True)
+class SackFrame:
+    TYPE: ClassVar[str] = "A"
+
+    sack: SACK
+
+    def encode(self) -> bytes:
+        return (sack_to_string(self.sack) + self.TYPE).encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        try:
+            return cls(sack_from_string(text[:-1]))
+        except ValueError:
+            raise InvalidFrame("bad sackList or ackNumber") from None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamStatusFrame:
+    """
+    Tells the client which of its SACKs the server has seen most recently.
+    """
+
+    TYPE: ClassVar[str] = "T"
+
+    last_sack_seen: SACK
+
+    def encode(self) -> bytes:
+        return (sack_to_string(self.last_sack_seen) + self.TYPE).encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        try:
+            return cls(sack_from_string(text[:-1]))
+        except ValueError:
+            raise InvalidFrame("bad sackList or ackNumber") from None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamCreatedFrame:
+    TYPE: ClassVar[str] = "C"
+
+    def encode(self) -> bytes:
+        return self.TYPE.encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        if len(text) != 1:
+            raise InvalidFrame("leading garbage")
+        return cls()
+
+
+@dataclass(frozen=True, slots=True)
+class YouCloseItFrame:
+    """
+    Asks the client to close the (non-HTTP) transport.
+    """
+
+    TYPE: ClassVar[str] = "Y"
+
+    def encode(self) -> bytes:
+        return self.TYPE.encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        if len(text) != 1:
+            raise InvalidFrame("leading garbage")
+        return cls()
+
+
+@dataclass(frozen=True, slots=True)
+class ResetFrame:
+    """
+    The sender has given up on the stream.  A reset frame from the server
+    implies a transport kill as well.
+    """
+
+    TYPE: ClassVar[str] = "!"
+
+    # Why the stream reset: a restricted string of at most 255 characters.
+    reason_string: str
+    # Was the reset caused by the application (not Minerva internals)?
+    application_level: bool
+
+    def encode(self) -> bytes:
+        level = "1" if self.application_level else "0"
+        return f"{self.reason_string}|{level}{self.TYPE}".encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        reason_string, sep, level = text[:-1].rpartition("|")
+        if not sep:
+            raise InvalidFrame("no applicationLevel")
+        match level:
+            case "0":
+                application_level = False
+            case "1":
+                application_level = True
+            case _:
+                raise InvalidFrame("bad applicationLevel")
+        if len(reason_string) > 255 or not is_restricted_string(reason_string):
+            raise InvalidFrame("reasonString too long or has illegal characters")
+        return cls(reason_string, application_level)
+
+
+class KillReason(StrEnum):
+    # No such stream
+    STREAM_ATTACH_FAILURE = "stream_attach_failure"
+    # Peer acked strings that we never sent
+    ACKED_UNSENT_STRINGS = "acked_unsent_strings"
+    # Peer sent frames that we don't understand
+    INVALID_FRAME_TYPE_OR_ARGUMENTS = "invalid_frame_type_or_arguments"
+    # Peer sent data that could not even be decoded into frames
+    FRAME_CORRUPTION = "frame_corruption"
+    # Peer has caused our receive window to overflow
+    RWIN_OVERFLOW = "rwin_overflow"
+
+
+@dataclass(frozen=True, slots=True)
+class TransportKillFrame:
+    TYPE: ClassVar[str] = "K"
+
+    reason: KillReason
+
+    def encode(self) -> bytes:
+        return (self.reason + self.TYPE).encode("ascii")
+
+    @classmethod
+    def decode(cls, text: str) -> Self:
+        try:
+            return cls(KillReason(text[:-1]))
+        except ValueError:
+            raise InvalidFrame(f"unknown kill reason {text[:-1]!r}") from None
+
+
+type Frame = (
+    HelloFrame
+    | StringFrame
+    | CommentFrame
+    | SeqNumFrame
+    | SackFrame
+    | StreamStatusFrame
+    | StreamCreatedFrame
+    | YouCloseItFrame
+    | ResetFrame
+    | TransportKillFrame
+)
+type ClientFrame = HelloFrame | StringFrame | SeqNumFrame | SackFrame | ResetFrame
+type ServerFrame = (
+    StringFrame
+    | CommentFrame
+    | SeqNumFrame
+    | SackFrame
+    | StreamStatusFrame
+    | StreamCreatedFrame
+    | YouCloseItFrame
+    | ResetFrame
+    | TransportKillFrame
+)
+
+# Type character -> decoder.
+_CLIENT_FRAME_DECODERS: Mapping[str, Callable[[str], ClientFrame]] = frozendict(
+    {
+        cls.TYPE: cls.decode
+        for cls in (StringFrame, SackFrame, SeqNumFrame, HelloFrame, ResetFrame)
+    }
+)
+_SERVER_FRAME_DECODERS: Mapping[str, Callable[[str], ServerFrame]] = frozendict(
+    {
+        cls.TYPE: cls.decode
+        for cls in (
+            StringFrame,
+            SackFrame,
+            SeqNumFrame,
+            StreamStatusFrame,
+            YouCloseItFrame,
+            CommentFrame,
+            StreamCreatedFrame,
+            ResetFrame,
+            TransportKillFrame,
+        )
+    }
+)
+
+
+def _decode[F](frame: bytes, decoders: Mapping[str, Callable[[str], F]]) -> F:
+    try:
+        text = frame.decode("ascii")
+    except UnicodeDecodeError:
+        raise InvalidFrame("frame contains non-ASCII bytes") from None
+    if not text:
+        raise InvalidFrame("0-length frame")
+    try:
+        decode = decoders[text[-1]]
+    except KeyError:
+        raise InvalidFrame(f"Invalid frame type {text[-1]!r}") from None
+    return decode(text)
+
+
+def decode_frame_from_client(frame: bytes) -> ClientFrame:
+    """
+    Decode a frame received from a Minerva client.  Raises `InvalidFrame`.
+    """
+    return _decode(frame, _CLIENT_FRAME_DECODERS)
+
+
+def decode_frame_from_server(frame: bytes) -> ServerFrame:
+    """
+    Decode a frame received from a Minerva server.  Raises `InvalidFrame`.
+    """
+    return _decode(frame, _SERVER_FRAME_DECODERS)

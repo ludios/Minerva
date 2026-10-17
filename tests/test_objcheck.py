@@ -1,198 +1,224 @@
-from twisted.trial import unittest
+import math
 
-from minerva import objcheck
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
+from minerva.objcheck import (
+    ensure_bool,
+    ensure_int,
+    ensure_non_neg_int,
+    ensure_non_neg_int_limit,
+    str_to_int_in_range,
+    str_to_non_neg,
+    str_to_non_neg_limit,
+)
 
-class StrToNonNegTests(unittest.TestCase):
-
-	def _call(self, s):
-		return objcheck.strToNonNeg(s)
-
-
-	def test_strToNonNeg_okay(self):
-		self.assertEqual(0, self._call("0"))
-		self.assertEqual(3, self._call("3"))
-		self.assertEqual(12390, self._call("12390"))
-
-		# Unicode is valid, too
-		self.assertEqual(0, self._call(u"0"))
-		self.assertEqual(12390, self._call(u"12390"))
-
-
-	def test_strToNonNeg_TypeErrors(self):
-		self.assertRaises(TypeError, lambda: self._call(None))
-		self.assertRaises(TypeError, lambda: self._call([]))
-		self.assertRaises(TypeError, lambda: self._call({}))
-
-
-	def test_strToNonNeg_ValueErrors(self):
-		# Empty str is invalid
-		self.assertRaises(ValueError, lambda: self._call(""))
-
-		# Anything with a leading zero is invalid
-		self.assertRaises(ValueError, lambda: self._call("07"))
-		self.assertRaises(ValueError, lambda: self._call("08"))
-		self.assertRaises(ValueError, lambda: self._call("09"))
-		self.assertRaises(ValueError, lambda: self._call("007"))
-		self.assertRaises(ValueError, lambda: self._call("0007"))
-
-		# Anything with non-digit character is invalid
-		self.assertRaises(ValueError, lambda: self._call("-7"))
-		self.assertRaises(ValueError, lambda: self._call("7e4"))
-		self.assertRaises(ValueError, lambda: self._call("7.0"))
-		self.assertRaises(ValueError, lambda: self._call("7."))
-		self.assertRaises(ValueError, lambda: self._call("0.0"))
-
-		# Hex is rejected
-		self.assertRaises(ValueError, lambda: self._call("7f"))
-		self.assertRaises(ValueError, lambda: self._call("f7"))
+# Strings that `int()` accepts but a strict parser must not.
+SLOPPY_NUMBERS = [
+    "",
+    "07",
+    "08",
+    "007",
+    "-0",
+    "+7",
+    " 7",
+    "7 ",
+    "7\n",  # `$` in a regex would accept this one
+    "1_000",
+    "\N{ARABIC-INDIC DIGIT THREE}",  # `\d` in a str regex would accept this one
+    "7e4",
+    "7.0",
+    "7.",
+    "0.0",
+    "7f",
+    "0x7",
+]
 
 
+class TestStrToNonNeg:
+    @pytest.mark.parametrize(("s", "expected"), [("0", 0), ("3", 3), ("12390", 12390)])
+    def test_okay(self, s: str, expected: int) -> None:
+        assert str_to_non_neg(s) == expected
 
-class StrToNonNegLimitTests(StrToNonNegTests):
+    @pytest.mark.parametrize("s", [*SLOPPY_NUMBERS, "-7"])
+    def test_rejects(self, s: str) -> None:
+        with pytest.raises(ValueError):
+            str_to_non_neg(s)
 
-	def _call(self, s, limit=2**128):
-		return objcheck.strToNonNegLimit(s, limit)
+    @pytest.mark.parametrize("bad", [None, [], {}, b"1"])
+    def test_type_errors(self, bad: object) -> None:
+        with pytest.raises(TypeError):
+            str_to_non_neg(bad)  # ty: ignore[invalid-argument-type]
 
+    @given(st.integers(min_value=0))
+    def test_roundtrip(self, n: int) -> None:
+        assert str_to_non_neg(str(n)) == n
 
-	def test_withinLimit(self):
-		self.assertEqual(0, self._call("0", 0))
-		self.assertEqual(1, self._call("1", 1))
-		self.assertEqual(9, self._call("9", 9))
-		self.assertEqual(9, self._call("9", 10))
-		self.assertEqual(2**32, self._call(str(2**32), 2**32))
-		self.assertEqual(2**53, self._call(str(2**53), 2**53))
-		self.assertEqual(2**65, self._call(str(2**65), 2**65))
-
-
-	def test_outsideLimit(self):
-		# exercise the first `num > limit:` case
-		self.assertRaises(ValueError, lambda: self._call("1", 0))
-		self.assertRaises(ValueError, lambda: self._call("9", 8))
-		# exercise the `if len(value) > declenlimit:` case
-		self.assertRaises(ValueError, lambda: self._call("999999999999999999999", 8))
-		# exercise the last `num > limit:` case
-		self.assertRaises(ValueError, lambda: self._call(str(2**31), 2**31 - 1))
-		self.assertRaises(ValueError, lambda: self._call(str(2**53 + 1), 2**53))
-		self.assertRaises(ValueError, lambda: self._call(str(2**65 + 1), 2**65))
-
-
-
-class StrToIntInRangeTests(unittest.TestCase):
-
-	def test_strToIntInRange_withinLimit(self):
-		self.assertEqual(3, objcheck.strToIntInRange("3", 3, 3))
-		self.assertEqual(3, objcheck.strToIntInRange("3", -3, 3))
-		self.assertEqual(-3, objcheck.strToIntInRange("-3", -3, 3))
-		self.assertEqual(0, objcheck.strToIntInRange("0", 0, 0))
+    @given(st.text())
+    def test_only_canonical_strings_accepted(self, s: str) -> None:
+        """
+        Any string that is accepted is the canonical decimal form of the result.
+        """
+        try:
+            n = str_to_non_neg(s)
+        except ValueError:
+            return
+        assert str(n) == s
 
 
-	def test_strToIntInRange_outsideLimit(self):
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("-4", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("4", -3, 3))
+class TestStrToNonNegLimit:
+    @pytest.mark.parametrize(
+        ("s", "limit"),
+        [
+            ("0", 0),
+            ("1", 1),
+            ("9", 9),
+            ("9", 10),
+            *((str(2**e), 2**e) for e in (32, 53, 65)),
+        ],
+    )
+    def test_within_limit(self, s: str, limit: int) -> None:
+        assert str_to_non_neg_limit(s, limit) == int(s)
+
+    @pytest.mark.parametrize(
+        ("s", "limit"),
+        [
+            ("1", 0),
+            ("9", 8),
+            ("999999999999999999999", 8),
+            (str(2**31), 2**31 - 1),
+            (str(2**53 + 1), 2**53),
+            (str(2**65 + 1), 2**65),
+        ],
+    )
+    def test_outside_limit(self, s: str, limit: int) -> None:
+        with pytest.raises(ValueError):
+            str_to_non_neg_limit(s, limit)
+
+    @pytest.mark.parametrize("s", SLOPPY_NUMBERS)
+    def test_rejects_sloppy(self, s: str) -> None:
+        with pytest.raises(ValueError):
+            str_to_non_neg_limit(s, 2**128)
+
+    @given(
+        st.integers(min_value=0, max_value=2**70),
+        st.integers(min_value=0, max_value=2**70),
+    )
+    def test_agrees_with_unlimited(self, n: int, limit: int) -> None:
+        if n <= limit:
+            assert str_to_non_neg_limit(str(n), limit) == n
+        else:
+            with pytest.raises(ValueError):
+                str_to_non_neg_limit(str(n), limit)
 
 
-	def test_strToIntInRange_badNumbers(self):
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("1.", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("1.0", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("1.5", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("-0", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("x", -3, 3))
-		self.assertRaises(ValueError, lambda: objcheck.strToIntInRange("-", -3, 3))
+class TestStrToIntInRange:
+    @pytest.mark.parametrize(
+        ("s", "lower", "upper", "expected"),
+        [("3", 3, 3, 3), ("3", -3, 3, 3), ("-3", -3, 3, -3), ("0", 0, 0, 0)],
+    )
+    def test_within_range(self, s: str, lower: int, upper: int, expected: int) -> None:
+        assert str_to_int_in_range(s, lower, upper) == expected
+
+    @pytest.mark.parametrize("s", ["-4", "4"])
+    def test_outside_range(self, s: str) -> None:
+        with pytest.raises(ValueError):
+            str_to_int_in_range(s, -3, 3)
+
+    @pytest.mark.parametrize(
+        "s", ["1.", "1.0", "1.5", "-0", "", "x", "-", "-01", "1\n"]
+    )
+    def test_bad_numbers(self, s: str) -> None:
+        with pytest.raises(ValueError):
+            str_to_int_in_range(s, -3, 3)
+
+    @given(st.integers(), st.text())
+    def test_only_canonical_strings_accepted(self, bound: int, s: str) -> None:
+        try:
+            n = str_to_int_in_range(s, -abs(bound), abs(bound))
+        except ValueError:
+            return
+        assert str(n) == s
+        assert abs(n) <= abs(bound)
 
 
-	def test_strToIntInRange_TypeErrors(self):
-		self.assertRaises(TypeError, lambda: objcheck.strToIntInRange(None))
-		self.assertRaises(TypeError, lambda: objcheck.strToIntInRange([]))
-		self.assertRaises(TypeError, lambda: objcheck.strToIntInRange({}))
+class TestEnsureInt:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(0, 0), (-1, -1), (-1.0, -1), (-0.0, 0), (2.0, 2), (2 * 10**26, 2 * 10**26)],
+    )
+    def test_ensure_int(self, value: float, expected: int) -> None:
+        result = ensure_int(value)
+        assert result == expected
+        assert type(result) is int
+
+    @pytest.mark.parametrize("value", [0.5, -1.5, math.nan, math.inf, -math.inf])
+    def test_value_errors(self, value: float) -> None:
+        with pytest.raises(ValueError):
+            ensure_int(value)
+
+    @pytest.mark.parametrize("value", ["0", "-0", {}, [], True, False, None])
+    def test_type_errors(self, value: object) -> None:
+        with pytest.raises(TypeError):
+            ensure_int(value)  # ty: ignore[invalid-argument-type]
 
 
+class TestEnsureNonNegInt:
+    @pytest.mark.parametrize(
+        ("value", "expected"), [(0, 0), (-0, 0), (-0.0, 0), (2.0, 2)]
+    )
+    def test_ensure_non_neg_int(self, value: float, expected: int) -> None:
+        result = ensure_non_neg_int(value)
+        assert result == expected
+        assert type(result) is int
 
-class EnsureIntTests(unittest.TestCase):
+    @pytest.mark.parametrize("value", [0.001, -1, -1.0, -2.0, -(10**29), math.inf])
+    def test_value_errors(self, value: float) -> None:
+        with pytest.raises(ValueError):
+            ensure_non_neg_int(value)
 
-	def test_ensureInt(self):
-		self.assertEqual(0, objcheck.ensureInt(0))
-		self.assertEqual(-1, objcheck.ensureInt(-1))
-		self.assertEqual(-1, objcheck.ensureInt(-1.0))
-		self.assertTrue(isinstance(objcheck.ensureInt(-1.0), int))
-		self.assertEqual(0, objcheck.ensureInt(-0.0))
-		self.assertTrue(isinstance(objcheck.ensureInt(-0.0), int))
-		self.assertEqual(2, objcheck.ensureInt(2.0))
-		self.assertTrue(isinstance(objcheck.ensureInt(2.0), int))
-		self.assertEqual(200000000000000000000000000, objcheck.ensureInt(200000000000000000000000000))
-
-
-	def test_ensureIntExceptions(self):
-		self.assertRaises(ValueError, lambda: objcheck.ensureInt("0"))
-		self.assertRaises(ValueError, lambda: objcheck.ensureInt("-0"))
-		self.assertRaises(TypeError, lambda: objcheck.ensureInt({}))
-		self.assertRaises(TypeError, lambda: objcheck.ensureInt([]))
-		self.assertRaises(TypeError, lambda: objcheck.ensureInt(True))
-		self.assertRaises(TypeError, lambda: objcheck.ensureInt(False))
+    @pytest.mark.parametrize("value", ["0", "-0", "0.001", True, False, {}, [], None])
+    def test_type_errors(self, value: object) -> None:
+        with pytest.raises(TypeError):
+            ensure_non_neg_int(value)
 
 
+class TestEnsureNonNegIntLimit:
+    def test_edge(self) -> None:
+        assert ensure_non_neg_int_limit(2**31 - 1, 2**31 - 1) == 2**31 - 1
 
-class EnsureNonNegIntTests(unittest.TestCase):
+    @pytest.mark.parametrize("value", [2**31, 2**32])
+    def test_too_high(self, value: int) -> None:
+        with pytest.raises(ValueError):
+            ensure_non_neg_int_limit(value, 2**31 - 1)
 
-	function = lambda _ignoredSelf, x: objcheck.ensureNonNegInt(x)
-
-	def test_ensureNonNegInt(self):
-		for expected, input in [
-			(0, 0),
-			(0, -0),
-			(0, -0.0),
-			(2, 2.0),
-		]:
-			self.assertEqual(expected, input)
-			self.assertTrue(isinstance(expected, int))
-
-
-	def test_ensureNonNegIntExceptions(self):
-		self.assertRaises(ValueError, lambda: self.function(0.001))
-		self.assertRaises(ValueError, lambda: self.function(-1))
-		self.assertRaises(ValueError, lambda: self.function(-1.0))
-		self.assertRaises(ValueError, lambda: self.function(-2.0))
-		self.assertRaises(ValueError, lambda: self.function(-100000000000000000000000000000))
-
-		self.assertRaises(TypeError, lambda: self.function("0"))
-		self.assertRaises(TypeError, lambda: self.function("-0"))
-		self.assertRaises(TypeError, lambda: self.function("0.001"))
-
-		self.assertRaises(TypeError, lambda: self.function(True))
-		self.assertRaises(TypeError, lambda: self.function(False))
-
-		self.assertRaises(TypeError, lambda: self.function({}))
-		self.assertRaises(TypeError, lambda: self.function([]))
+    @given(st.one_of(st.integers(), st.floats(), st.booleans(), st.none(), st.text()))
+    def test_only_raises_type_or_value_error(self, value: object) -> None:
+        """
+        The hello-frame parser relies on this: anything else would escape it.
+        """
+        try:
+            result = ensure_non_neg_int_limit(value, 2**53)
+        except TypeError, ValueError:
+            return
+        assert type(result) is int
+        assert 0 <= result <= 2**53
 
 
+class TestEnsureBool:
+    @pytest.mark.parametrize("value", [1, 1.0, True])
+    def test_true(self, value: object) -> None:
+        assert ensure_bool(value) is True
 
-class EnsureNonNegIntLimitTests(unittest.TestCase):
+    @pytest.mark.parametrize("value", [0, 0.0, -0.0, False])
+    def test_false(self, value: object) -> None:
+        assert ensure_bool(value) is False
 
-	function = lambda _ignoredSelf, x: objcheck.ensureNonNegIntLimit(x, 2**31-1)
-
-	def test_ensureNonNegIntLimitEdgeCase(self):
-		self.assertEqual(2**31 - 1, self.function(2**31 - 1))
-
-
-	def test_ensureNonNegIntLimitExceptionsTooHigh(self):
-		self.assertRaises(ValueError, lambda: self.function(2**31))
-		self.assertRaises(ValueError, lambda: self.function(2**32))
-
-
-
-class EnsureBoolTests(unittest.TestCase):
-
-	def test_True(self):
-		for t in (1, 1.0, True):
-			self.assertIdentical(True, objcheck.ensureBool(t))
-
-
-	def test_False(self):
-		for f in (0, 0.0, -0.0, False):
-			self.assertIdentical(False, objcheck.ensureBool(f))
-
-
-	def test_ValueError(self):
-		for e in (-0.5, -1.00001, 1.0001, [], {}, set(), float('nan'), float('inf')):
-			self.assertRaises(ValueError, lambda: objcheck.ensureBool(e))
+    @pytest.mark.parametrize(
+        "value",
+        [-0.5, -1.00001, 1.0001, 2, [], {}, set(), "1", None, math.nan, math.inf],
+    )
+    def test_value_error(self, value: object) -> None:
+        with pytest.raises(ValueError):
+            ensure_bool(value)

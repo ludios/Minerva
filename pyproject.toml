@@ -1,0 +1,121 @@
+[project]
+name = "Minerva"
+version = "26.10.0"
+description = "Robust Comet server and client built on Twisted and Closure Library"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE.txt"]
+authors = [{ name = "Ivan Kozik", email = "ivan@ludios.org" }]
+requires-python = ">=3.15"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Twisted",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: JavaScript",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: System :: Networking",
+    "Typing :: Typed",
+]
+dependencies = [
+    "jinja2>=3.1",
+    "twisted>=25.5",
+]
+
+[project.urls]
+Homepage = "https://ludios.org/minerva/"
+Source = "https://github.com/ludios/Minerva"
+
+[project.scripts]
+minerva-site = "minerva.site:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.150",
+    "pytest>=9.0",
+    "ruff>=0.17",
+    "ty>=0.0.89",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "minerva"
+
+
+[tool.ruff]
+target-version = "py315"
+extend-exclude = [
+    # Untracked work-in-progress left by the author; not part of the package.
+    "minerva/",
+]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",  # pycodestyle, pyflakes
+    "I",            # isort
+    "UP",           # pyupgrade
+    "B",            # bugbear
+    "N",            # pep8-naming
+    "C4",           # comprehensions
+    "SIM",          # simplify
+    "RET",          # return
+    "PIE",
+    "PT",           # pytest style
+    "PERF",
+    "FURB",
+    "PGH",
+    "RUF",
+    "ANN",          # require annotations (relaxed for tests below)
+]
+ignore = [
+    "ANN401",  # `Any` is occasionally the honest type (e.g. JSON from the wire)
+    "SIM108",  # ternaries aren't always clearer
+    "RET505",  # `else` after `return` sometimes reads better
+    "N818",    # domain names like `InvalidFrame` read better than `InvalidFrameError`
+]
+
+[tool.ruff.lint.pep8-naming]
+# Methods that implement a *Twisted* interface must keep Twisted's camelCase
+# names, because Twisted (or Twisted-style producers) call them.  Everything
+# that Minerva itself owns is snake_case.
+extend-ignore-names = [
+    "buildProtocol",
+    "connectionLost",
+    "connectionMade",
+    "dataReceived",
+    "getChild",
+    "makeConnection",
+    "pauseProducing",
+    "registerProducer",
+    "render_GET",
+    "render_POST",
+    "resumeProducing",
+    "stopProducing",
+    "unregisterProducer",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN",
+    "PT011",  # `pytest.raises(ValueError)` is often exactly the contract
+]
+
+
+[tool.ty.environment]
+python-version = "3.15"
+
+[tool.ty.src]
+exclude = ["minerva/"]
+
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]

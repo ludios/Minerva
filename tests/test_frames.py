@@ -1,607 +1,552 @@
-import simplejson
+import contextlib
+import json
+import string
+from typing import Any
 
-from twisted.trial import unittest
-
-from strfrag import StringFragment
-
-from minerva.frames import (
-	HelloFrame, StreamCreatedFrame, StringFrame, SeqNumFrame,
-	SackFrame, StreamStatusFrame, YouCloseItFrame, ResetFrame, CommentFrame,
-	TransportKillFrame, InvalidFrame, InvalidHello, CannotEncode,
-	decodeFrameFromClient, decodeFrameFromServer)
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from minerva.frames import (
-	FORMAT_XHR, FORMAT_HTMLFILE,
+    MAX_SAFE_INT,
+    ClientFrame,
+    CommentFrame,
+    HelloFrame,
+    HttpFormat,
+    InvalidFrame,
+    InvalidHello,
+    KillReason,
+    ResetFrame,
+    SackFrame,
+    SeqNumFrame,
+    ServerFrame,
+    StreamCreatedFrame,
+    StreamStatusFrame,
+    StringFrame,
+    TransportKillFrame,
+    YouCloseItFrame,
+    decode_frame_from_client,
+    decode_frame_from_server,
+    encode_hello_json,
+    is_restricted_string,
+    sack_from_string,
+    sack_to_string,
+)
+from minerva.window import SACK
+from tests.helpers import make_hello
+
+# --- Strategies ---------------------------------------------------------------
+
+restricted_text = st.text(
+    alphabet=st.characters(min_codepoint=0x20, max_codepoint=0x7E)
+)
+seq_nums = st.integers(min_value=0, max_value=MAX_SAFE_INT)
+sacks = st.builds(
+    SACK,
+    st.integers(min_value=-1, max_value=MAX_SAFE_INT),
+    st.lists(seq_nums, unique=True).map(lambda xs: tuple(sorted(xs))),
 )
 
-from minerva.window import SACK
-from minerva.test_mserver import _makeHelloFrame, sf
 
-
-class ReallyEqualMixin(object):
-	"""
-	A mixin for your L{unittest.TestCase}s to better test object equality
-	and inequality.  Details at:
-
-	http://ludios.org/ivank/2010/10/testing-your-eq-ne-cmp/
-	"""
-	def assertReallyEqual(self, a, b):
-		# assertEqual first, because it will have a good message if the
-		# assertion fails.
-		self.assertEqual(a, b)
-		self.assertEqual(b, a)
-		self.assertTrue(a == b)
-		self.assertTrue(b == a)
-		self.assertFalse(a != b)
-		self.assertFalse(b != a)
-		self.assertEqual(0, cmp(a, b))
-		self.assertEqual(0, cmp(b, a))
-
-
-	def assertReallyNotEqual(self, a, b):
-		# assertNotEqual first, because it will have a good message if the
-		# assertion fails.
-		self.assertNotEqual(a, b)
-		self.assertNotEqual(b, a)
-		self.assertFalse(a == b)
-		self.assertFalse(b == a)
-		self.assertTrue(a != b)
-		self.assertTrue(b != a)
-		self.assertNotEqual(0, cmp(a, b))
-		self.assertNotEqual(0, cmp(b, a))
-
-
-
-DeleteProperty = ("DeleteProperty",)
-
-
-def dumpToJson7Bit(data):
-	return simplejson.dumps(data, separators=(',', ':'), allow_nan=False)
-
-
-class HelloFrameTests(unittest.TestCase, ReallyEqualMixin):
-	disableSpeedups = False
-
-	def setUp(self):
-		if self.disableSpeedups:
-			simplejson._toggle_speedups(False)
-			assert isinstance(simplejson.loads('"x"'), unicode)
-
-
-	def tearDown(self):
-		if self.disableSpeedups:
-			simplejson._toggle_speedups(True)
-
-
-	def test_eq(self):
-		for a, b in [
-			(HelloFrame({"a": 1}), HelloFrame({"a": 1})),
-		]:
-			self.assertReallyEqual(a, b)
-
-		for a, b in [
-			(HelloFrame({"a": 1}), HelloFrame({"a": 2})),
-			(HelloFrame({"a": 1}), HelloFrame({"a": 1, "b": 1})),
-			(HelloFrame({"a": 1}), None),
-		]:
-			self.assertReallyNotEqual(a, b)
-
-
-	def test_publicAttr(self):
-		self.assertEqual("goes", HelloFrame({"anything": "goes"}).anything)
-
-
-	def test_repr(self):
-		self.assertEqual("HelloFrame({'a': 1})", repr(HelloFrame({'a': 1})))
-
-
-	def test_wantsStrings(self):
-		s = _makeHelloFrame()
-		self.assertEqual(False, s.wantsStrings())
-		s.succeedsTransport = None
-		self.assertEqual(True, s.wantsStrings())
-		s.succeedsTransport = 3
-		self.assertEqual(True, s.wantsStrings())
-		del s.succeedsTransport
-		self.assertEqual(False, s.wantsStrings())
-
-
-	def test_decode(self):
-		s = _makeHelloFrame().encode()
-		self.assertEqual(
-			HelloFrame(dict(
-				transportNumber=0,
-				requestNewStream=True,
-				protocolVersion=2,
-				streamId='x'*26,
-				streamingResponse=True,
-				maxReceiveBytes=2**30,
-				maxOpenTime=2**30,
-				maxInactivity=0,
-				needPaddingBytes=0,
-				httpFormat=None,
-				sack=None,
-				lastSackSeenByClient=SACK(-1, ()))),
-			HelloFrame.decode(sf(s)))
-
-
-	def test_decodeFailedBadEedsArgument(self):
-		"""
-		A too-low or too-high transport number (or a wrong type) for the 'eeds'
-		argument causes L{InvalidHello} to be raised.
-		In this case, the stream is never registered with the streamTracker.
-		"""
-		for succeedsTransport in [-1, -2**32, -0.5, 2**53+1, "4", True, False, [], {}]:
-			s = _makeHelloFrame(dict(
-				succeedsTransport=succeedsTransport)).encode()
-
-			self.assertRaises(InvalidHello, lambda: HelloFrame.decode(sf(s)))
-
-
-	def test_decodeFailedTooMuchNestingObject(self):
-		"""
-		If the L{HelloFrame} has too much nesting of objects,
-		L{InvalidHello} is raised.
-		"""
-		level = 20000
-		s = '{"":' * level + '1' + '}' * level
-		self.assertRaises(InvalidHello, lambda: HelloFrame.decode(sf(s)))
-
-
-	def test_decodeFailedTooMuchNestingArray(self):
-		"""
-		If the L{HelloFrame} has too much nesting of arrays,
-		L{InvalidHello} is raised.
-		"""
-		level = 20000
-		s = '[' * level + '1' + ']' * level
-		self.assertRaises(InvalidHello, lambda: HelloFrame.decode(sf(s)))
-
-
-	def test_decodeFailedTrailingGarbage(self):
-		"""
-		If L{HelloFrame} has trailing garbage 'x' after the JSON,
-		L{InvalidHello} is raised.
-		"""
-		s = _makeHelloFrame().encode()[:-1] + 'x' + 'H'
-		self.assertRaises(InvalidHello, lambda: HelloFrame.decode(sf(s)))
-
-
-	def test_decodeFailed_nan_inf_neginf(self):
-		"""
-		If L{HelloFrame} contains NaN, Infinity, or -Infinity,
-		L{InvalidHello} is raised.
-		"""
-		for bad in (float('nan'), float('inf'), float('-inf')):
-			hello = _makeHelloFrame(dict(transportNumber=bad))
-			s = simplejson.dumps(dict(hello._yieldMapping()))
-			self.assertRaises(InvalidHello, lambda: HelloFrame.decode(sf(s)))
-
-
-	def test_decodeFailedInvalidValues(self):
-		"""
-		If L{HelloFrame} contains invalid values for various properties,
-		L{InvalidHello} is raised.
-		"""
-		def listWithout(oldList, without):
-			arr = oldList[:]
-			for w in without:
-				arr.remove(w)
-			return arr
-
-		genericBad = [
-			-2**65, -1, -0.5, 0.5, 2**53+1, "", [], ["something"],
-			{}, True, False, None]
-
-		badMutations = dict(
-			transportNumber=[DeleteProperty] + genericBad,
-			protocolVersion=[DeleteProperty, 0, 1, "1", 1.001] + genericBad,
-			streamId=[
-				DeleteProperty, '', '\x00', 'x'*1, u'\ucccc'*25, u'\ucccc'*8,
-				u'\x80'*25, 'x'*19, 'x'*31, 'x'*3000] + genericBad, # 19 is below limit, 31 is over limit
-			httpFormat=[4, 1, 0] + genericBad,
-			streamingResponse=[2, 3] + listWithout(genericBad, [True, False]),
-			maxReceiveBytes=genericBad,
-			maxOpenTime=genericBad,
-			maxInactivity=[None, 0.5, 1.5, 601],
-			# We can pass either a string or a SACK
-			sack=['', '|', SACK(-2, ()), SACK(-1, (-2,))],
-			lastSackSeenByClient=[DeleteProperty, '', '|', SACK(-2, ()), SACK(-1, (-2,))],
-		)
-		##print badMutations
-
-		ran = 0
-
-		for mutateProperty, mutateValues in badMutations.iteritems():
-			for value in mutateValues:
-				badHello = _makeHelloFrame()
-				if value is not DeleteProperty:
-					setattr(badHello, mutateProperty, value)
-				else:
-					try:
-						delattr(badHello, mutateProperty)
-					except AttributeError:
-						 # It wasn't there in the first place.
-						pass
-
-				##print badHello
-				s = badHello.encode()
-				self.assertRaises(InvalidHello, lambda: HelloFrame.decode(sf(s)))
-
-				ran += 1
-
-		# sanity check; make sure we actually tested things
-		assert ran == 116, "Ran %d times; change this assert as needed" % (ran,)
-
-
-	def test_encode(self):
-		hello = HelloFrame(dict(transportNumber=0))
-		self.assertEqual('{"tnum":0}' + 'H', hello.encode())
-
-
-	def test_encodeDecodeEquality(self):
-		# Need to make some options explicit for equality to work
-		hello = _makeHelloFrame(dict(
-			httpFormat=FORMAT_XHR,
-			# for equality in JS, need boolean instead of number.  Do the
-			# same here for consistency.
-			requestNewStream=True,
-			streamingResponse=True,
-			needPaddingBytes=0,
-			maxInactivity=1,
-			sack=SACK(-1, ())))
-		encodedDecodedHello = HelloFrame.decode(sf(hello.encode()))
-		self.assertEqual(hello, encodedDecodedHello)
-
-
-	def test_encodeFailed(self):
-		hello = HelloFrame(dict(aMadeUpKey=0))
-		self.assertRaises(CannotEncode, lambda: hello.encode())
-
-
-
-class HelloFrameTestsNoSpeedups(HelloFrameTests):
-	disableSpeedups = True
-
-
-
-class StringFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(StringFrame("Hello"), StringFrame("Hello"))
-		self.assertNotEqual(StringFrame("Hello"), StringFrame("Hello2"))
-		self.assertEqual(StringFrame(StringFragment("Hello", 0, 5)), StringFrame("Hello"))
-
-
-	def test_publicAttr(self):
-		self.assertEqual(StringFragment("Hello", 0, 5), StringFrame("Hello").string)
-
-
-	def test_repr(self):
-		self.assertEqual("StringFrame('Hello')", repr(StringFrame("Hello")))
-
-
-	def test_decode(self):
-		s = '\x00unchecked\xfftext' + ' '
-		self.assertEqual(
-			StringFrame(StringFragment(s, 0, len(s) - 1)),
-			StringFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		s = '\x00unchecked\xfftext'
-		self.assertEqual(s + ' ', StringFrame(sf(s)).encode())
-
-
-
-class CommentFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(CommentFrame("Hello"), CommentFrame("Hello"))
-		self.assertNotEqual(CommentFrame("Hello"), CommentFrame("Hello2"))
-
-
-	def test_publicAttr(self):
-		self.assertEqual("Hello", CommentFrame("Hello").comment)
-
-
-	def test_repr(self):
-		self.assertEqual("CommentFrame('Hello')", repr(CommentFrame("Hello")))
-
-
-	def test_decode(self):
-		s = '\x00unchecked\xfftext' + '^'
-		self.assertEqual(
-			CommentFrame(s[:-1]),
-			CommentFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		s = '\x00unchecked\xfftext'
-		self.assertEqual(s + '^', CommentFrame(sf(s)).encode())
-
-
-
-class SeqNumFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(SeqNumFrame(2), SeqNumFrame(2))
-		self.assertNotEqual(SeqNumFrame(2), SeqNumFrame(3))
-
-
-	def test_publicAttr(self):
-		self.assertEqual(2, SeqNumFrame(2).seqNum)
-
-
-	def test_repr(self):
-		self.assertEqual("SeqNumFrame(2)", repr(SeqNumFrame(2)))
-		self.assertEqual("SeqNumFrame(%d)" % 2**53, repr(SeqNumFrame(2**53)))
-
-
-	def test_decode(self):
-		for seqNum in (0, 1, 2**32, 2**53):
-			s = str(seqNum) + 'N'
-			self.assertEqual(
-				SeqNumFrame(seqNum),
-				SeqNumFrame.decode(sf(s)))
-
-
-	def test_decodeFailed(self):
-		for s in (str(-1) + 'N', str(-2**53) + 'N', str(2**53 + 1) + 'N', ' ', '00' + 'N', '0' * 1024):
-			self.assertRaises(
-				InvalidFrame,
-				lambda: SeqNumFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		self.assertEqual('2N', SeqNumFrame(2).encode())
-		self.assertEqual('0N', SeqNumFrame(0).encode())
-		self.assertEqual('%dN' % 2**53, SeqNumFrame(2**53).encode())
-
-
-
-class SackFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(SackFrame(SACK(2, ())), SackFrame(SACK(2, ())))
-		self.assertNotEqual(SackFrame(SACK(2, (1,))), SackFrame(SACK(3, (2,))))
-		self.assertNotEqual(SackFrame(SACK(2, ())), SackFrame(SACK(3, ())))
-
-
-	def test_publicAttr(self):
-		self.assertEqual(SACK(2, (4, 5)), SackFrame(SACK(2, (4, 5))).sack)
-		self.assertEqual(2, SackFrame(SACK(2, (4, 5))).sack.ackNumber)
-		self.assertEqual((4, 5), SackFrame(SACK(2, (4, 5))).sack.sackList)
-
-
-	def test_repr(self):
-		self.assertEqual("SackFrame(SACK(2, (1, 4)))", repr(SackFrame(SACK(2, (1, 4)))))
-
-
-	def test_decode(self):
-		for ackNum in (-1, 0, 1, 2**53):
-			s = '1,4|%sA' % (ackNum,)
-			self.assertEqual(
-				SackFrame(SACK(ackNum, (1, 4))),
-				SackFrame.decode(sf(s)))
-
-
-	def test_decodeNoSackNumbers(self):
-		s = '|%sA' % (2**53,)
-		self.assertEqual(
-			SackFrame(SACK(2**53, ())),
-			SackFrame.decode(sf(s)))
-
-
-	def test_decodeFailedAckNumberInvalid(self):
-		for badNum in (2**53+1, -2, -1.01, 0.5, 1.5):
-			s = '1,4|%sA' % (badNum,)
-			self.assertRaises(
-				InvalidFrame,
-				lambda: SackFrame.decode(sf(s)))
-
-
-	def test_decodeFailedOneSackNumberInvalid(self):
-		for badNum in (2**53+1, -1, 0.5, 1.5):
-			s = '1,%s|4A' % (badNum,)
-			self.assertRaises(
-				InvalidFrame,
-				lambda: SackFrame.decode(sf(s)))
-
-
-	def test_decodeFailedAtSplit(self):
-		for s in ('||4A', '', ' ', '|'):
-			self.assertRaises(
-				InvalidFrame,
-				lambda: SackFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		self.assertEqual('1,4|2A', SackFrame(SACK(2, (1, 4))).encode())
-		self.assertEqual('4|2A', SackFrame(SACK(2, (4,))).encode())
-		self.assertEqual('|2A', SackFrame(SACK(2, ())).encode())
-
-
-
-class StreamStatusFrameTests(unittest.TestCase):
-	"""
-	StreamStatusFrame is roughly equivalent to SackFrame, so we omit
-	many of the tests.
-	"""
-	def test_eq(self):
-		self.assertEqual(StreamStatusFrame(SACK(2, ())), StreamStatusFrame(SACK(2, ())))
-		self.assertNotEqual(StreamStatusFrame(SACK(2, ())), StreamStatusFrame(SACK(3, ())))
-
-
-	def test_publicAttr(self):
-		self.assertEqual(SACK(2, (4, 5)), StreamStatusFrame(SACK(2, (4, 5))).lastSackSeen)
-
-
-	def test_repr(self):
-		self.assertEqual("StreamStatusFrame(SACK(2, (1, 4)))", repr(StreamStatusFrame(SACK(2, (1, 4)))))
-
-
-	def test_decode(self):
-		for ackNum in (-1, 0, 1, 2**53):
-			s = '1,4|%sT' % (ackNum,)
-			self.assertEqual(
-				StreamStatusFrame(SACK(ackNum, (1, 4))),
-				StreamStatusFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		self.assertEqual('1,4|2T', StreamStatusFrame(SACK(2, (1, 4))).encode())
-
-
-
-class StreamCreatedFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(StreamCreatedFrame(), StreamCreatedFrame())
-		self.assertNotEqual(StreamCreatedFrame(), ())
-
-
-	def test_repr(self):
-		self.assertEqual("StreamCreatedFrame()", repr(StreamCreatedFrame()))
-
-
-	def test_decode(self):
-		s = 'C'
-		self.assertEqual(
-			StreamCreatedFrame(),
-			StreamCreatedFrame.decode(sf(s)))
-
-
-	def test_decodeFailed(self):
-		s = 'extra stuff' + 'C'
-		self.assertRaises(
-			InvalidFrame,
-			lambda: StreamCreatedFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		self.assertEqual('C', StreamCreatedFrame().encode())
-
-
-
-class YouCloseItFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(YouCloseItFrame(), YouCloseItFrame())
-		self.assertNotEqual(YouCloseItFrame(), ())
-
-
-	def test_repr(self):
-		self.assertEqual("YouCloseItFrame()", repr(YouCloseItFrame()))
-
-
-	def test_decode(self):
-		s = 'Y'
-		self.assertEqual(
-			YouCloseItFrame(),
-			YouCloseItFrame.decode(sf(s)))
-
-
-	def test_decodeFailed(self):
-		s = 'extra stuff' + 'Y'
-		self.assertRaises(
-			InvalidFrame,
-			lambda: YouCloseItFrame.decode(sf(s)))
-
-
-	def test_encode(self):
-		self.assertEqual('Y', YouCloseItFrame().encode())
-
-
-
-class ResetFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(ResetFrame("why", True), ResetFrame("why", True))
-		self.assertNotEqual(ResetFrame("why", True), ResetFrame("why", False))
-		self.assertNotEqual(ResetFrame("why2", True), ResetFrame("why", True))
-
-
-	def test_publicAttr(self):
-		self.assertEqual("why", ResetFrame("why", True).reasonString)
-		self.assertEqual(True, ResetFrame("why", True).applicationLevel)
-
-
-	def test_repr(self):
-		self.assertEqual("ResetFrame('why', True)", repr(ResetFrame("why", True)))
-
-
-	def test_encode(self):
-		self.assertEqual('the reason|0!', ResetFrame("the reason", False).encode())
-		self.assertEqual('the reason|1!', ResetFrame("the reason", True).encode())
-
-
-	def test_decode(self):
-		for applicationLevel in (True, False):
-			for reasonString in ('the reason', 'the | | reason', '', '|', '||'):
-				s = reasonString + '|' + str(int(applicationLevel)) + '!'
-				self.assertEqual(
-					ResetFrame(reasonString, applicationLevel),
-					ResetFrame.decode(sf(s)))
-
-
-	def test_decodeFailedBadReason(self):
-		s = '\x7freason|0!'
-		self.assertRaises(
-			InvalidFrame,
-			lambda: ResetFrame.decode(sf(s)))
-
-
-	def test_decodeFailedBadBoolean(self):
-		s = 'reason|2!'
-		self.assertRaises(
-			InvalidFrame,
-			lambda: ResetFrame.decode(sf(s)))
-
-
-
-tk = TransportKillFrame
-
-class TransportKillFrameTests(unittest.TestCase):
-
-	def test_eq(self):
-		self.assertEqual(
-			TransportKillFrame(tk.stream_attach_failure),
-			TransportKillFrame(tk.stream_attach_failure))
-		self.assertNotEqual(
-			TransportKillFrame(tk.stream_attach_failure),
-			TransportKillFrame(tk.acked_unsent_strings))
-
-
-	def test_publicAttr(self):
-		self.assertEqual(
-			tk.acked_unsent_strings,
-			TransportKillFrame(tk.acked_unsent_strings).reason)
-
-
-	def test_repr(self):
-		self.assertEqual(
-			"TransportKillFrame('frame_corruption')",
-			repr(TransportKillFrame(tk.frame_corruption)))
-
-
-	def test_encode(self):
-		self.assertEqual('frame_corruptionK', TransportKillFrame(tk.frame_corruption).encode())
-
-
-	def test_decode(self):
-		for reason in tk.allReasons:
-			s = reason + 'K'
-			self.assertEqual(
-				TransportKillFrame(reason),
-				TransportKillFrame.decode(sf(s)))
-
-
-	def test_decodeFailed(self):
-		s = 'not_a_reasonK'
-		self.assertRaises(
-			InvalidFrame,
-			lambda: TransportKillFrame.decode(sf(s)))
-
-
-# TODO: add direct tests for decodeFrameFromClient, decodeFrameFromServer
+@st.composite
+def hello_frames(draw: st.DrawFn) -> HelloFrame:
+    wants_strings = draw(st.booleans())
+    return HelloFrame(
+        transport_number=draw(seq_nums),
+        stream_id=draw(st.text(alphabet=string.printable, min_size=20, max_size=30)),
+        streaming_response=draw(st.booleans()),
+        max_inactivity=draw(st.integers(min_value=0, max_value=600)),
+        last_sack_seen_by_client=draw(sacks),
+        request_new_stream=draw(st.booleans()),
+        wants_strings=wants_strings,
+        succeeds_transport=draw(st.none() | seq_nums) if wants_strings else None,
+        http_format=draw(st.none() | st.sampled_from(HttpFormat)),
+        need_padding_bytes=draw(st.integers(min_value=0, max_value=16 * 1024)),
+        max_receive_bytes=draw(seq_nums),
+        max_open_time=draw(st.none() | seq_nums),
+        sack=draw(st.none() | sacks),
+    )
+
+
+common_frames = st.one_of(
+    st.builds(StringFrame, restricted_text),
+    st.builds(SeqNumFrame, seq_nums),
+    st.builds(SackFrame, sacks),
+    st.builds(
+        ResetFrame, restricted_text.filter(lambda s: len(s) <= 255), st.booleans()
+    ),
+)
+client_frames: st.SearchStrategy[ClientFrame] = common_frames | hello_frames()
+server_frames: st.SearchStrategy[ServerFrame] = common_frames | st.one_of(
+    st.builds(CommentFrame, restricted_text),
+    st.builds(StreamStatusFrame, sacks),
+    st.just(StreamCreatedFrame()),
+    st.just(YouCloseItFrame()),
+    st.builds(TransportKillFrame, st.sampled_from(KillReason)),
+)
+
+json_values = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers()
+    | st.floats(allow_nan=False, allow_infinity=False)
+    # Mostly realistic strings, sometimes SACK-like ones.
+    | st.text()
+    | st.from_regex(r"\A[0-9,]*\|-?[0-9]+\Z"),
+    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+    max_leaves=5,
+)
+HELLO_KEYS = make_hello(wants_strings=True, sack=SACK(-1)).to_json_dict().keys()
+
+
+# --- Properties -----------------------------------------------------------------
+
+
+@given(st.text())
+def test_is_restricted_string(s: str) -> None:
+    assert is_restricted_string(s) == all(" " <= c <= "~" for c in s)
+
+
+@given(sacks)
+def test_sack_string_roundtrip(sack: SACK) -> None:
+    assert sack_from_string(sack_to_string(sack)) == sack
+
+
+@given(client_frames)
+def test_client_frame_roundtrip(frame: ClientFrame) -> None:
+    assert decode_frame_from_client(frame.encode()) == frame
+
+
+@given(server_frames)
+def test_server_frame_roundtrip(frame: ServerFrame) -> None:
+    assert decode_frame_from_server(frame.encode()) == frame
+
+
+frame_like_bytes = st.binary() | st.builds(
+    lambda body, type_char: body.encode("ascii") + type_char,
+    restricted_text,
+    st.sampled_from([bytes([c]) for c in b' ^NATCY!KH"?']),
+)
+
+
+@given(frame_like_bytes)
+def test_decoding_only_raises_invalid_frame(data: bytes) -> None:
+    """
+    No matter what a peer sends, decoding either works or raises
+    `InvalidFrame` -- any other exception would escape the transport.
+    """
+    for decode in (decode_frame_from_client, decode_frame_from_server):
+        with contextlib.suppress(InvalidFrame):
+            decode(data)
+
+
+@given(st.dictionaries(st.sampled_from(sorted(HELLO_KEYS)), json_values))
+def test_hello_decoding_only_raises_invalid_hello(data: dict[str, Any]) -> None:
+    with contextlib.suppress(InvalidHello):
+        HelloFrame.decode(encode_hello_json(data).decode("ascii"))
+
+
+# --- HelloFrame -----------------------------------------------------------------
+
+DELETE = sentinel("DELETE")
+
+
+def hello_json(**overrides: object) -> str:
+    """
+    The text of a valid hello frame, with keys of its JSON object replaced (or
+    deleted with `DELETE`).
+    """
+    data = make_hello().to_json_dict()
+    for key, value in overrides.items():
+        if value is DELETE:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return encode_hello_json(data).decode("ascii")
+
+
+GENERIC_BAD: list[object] = [
+    -(2**65),
+    -1,
+    -0.5,
+    0.5,
+    2**53 + 1,
+    "",
+    [],
+    ["something"],
+    {},
+    True,
+    False,
+    None,
+]
+BAD_HELLO_VALUES: dict[str, list[object]] = {
+    "tnum": [DELETE, *GENERIC_BAD],
+    "ver": [DELETE, 0, 1, "1", 1.001, *GENERIC_BAD],
+    "id": [
+        DELETE,
+        "",
+        "\x00",
+        "x",
+        "쳌" * 25,
+        "쳌" * 8,
+        "\x80" * 25,
+        "x" * 19,  # below the limit
+        "x" * 31,  # over the limit
+        "x" * 3000,
+        *GENERIC_BAD,
+    ],
+    "format": [4, 1, 0, *GENERIC_BAD],
+    "ming": [2, 3, *(v for v in GENERIC_BAD if v is not True and v is not False)],
+    "maxb": GENERIC_BAD,
+    "maxt": GENERIC_BAD,
+    "maxia": [DELETE, None, 0.5, 1.5, 601],
+    "pad": [16 * 1024 + 1, *GENERIC_BAD],
+    "sack": ["", "|", "|-2", "-2|-1", 4],
+    "seenack": [DELETE, "", "|", "|-2", "-2|-1", 4],
+}
+
+
+class TestHelloFrame:
+    def test_decode(self) -> None:
+        assert HelloFrame.decode(hello_json()) == HelloFrame(
+            transport_number=0,
+            request_new_stream=True,
+            protocol_version=2,
+            stream_id="x" * 26,
+            streaming_response=True,
+            max_receive_bytes=2**30,
+            max_open_time=2**30,
+            max_inactivity=0,
+            need_padding_bytes=0,
+            http_format=None,
+            sack=None,
+            last_sack_seen_by_client=SACK(-1, ()),
+        )
+
+    def test_encode(self) -> None:
+        hello = make_hello(max_open_time=None)
+        assert hello.encode() == (
+            b'{"tnum":0,"ver":2,"new":true,"id":"xxxxxxxxxxxxxxxxxxxxxxxxxx","ming":true,'
+            b'"pad":0,"maxb":1073741824,"maxia":0,"seenack":"|-1"}H'
+        )
+
+    def test_numbers_may_be_integral_floats(self) -> None:
+        hello = HelloFrame.decode(hello_json(tnum=3.0, maxia=1.0, new=1, ming=0))
+        assert hello.transport_number == 3
+        assert type(hello.transport_number) is int
+        assert hello.max_inactivity == 1
+        assert hello.request_new_stream is True
+        assert hello.streaming_response is False
+
+    @pytest.mark.parametrize(
+        ("eeds", "wants_strings", "succeeds_transport"),
+        [(DELETE, False, None), (None, True, None), (3, True, 3)],
+    )
+    def test_succeeds_transport(
+        self, eeds: object, wants_strings: bool, succeeds_transport: int | None
+    ) -> None:
+        """
+        The *presence* of "eeds" means that the client wants strings; its value
+        is the transport that this one may succeed.
+        """
+        hello = HelloFrame.decode(hello_json(eeds=eeds))
+        assert hello.wants_strings is wants_strings
+        assert hello.succeeds_transport == succeeds_transport
+
+    @pytest.mark.parametrize(
+        "eeds", [-1, -(2**32), -0.5, 2**53 + 1, "4", True, False, [], {}]
+    )
+    def test_bad_succeeds_transport(self, eeds: object) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(hello_json(eeds=eeds))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"":' * 20000 + "1" + "}" * 20000,
+            "[" * 20000 + "1" + "]" * 20000,
+            # Deep enough to raise RecursionError inside the json module.
+            "[" * 500_000 + "1" + "]" * 500_000,
+        ],
+    )
+    def test_too_much_nesting(self, text: str) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(text + "H")
+
+    def test_trailing_garbage(self) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(hello_json()[:-1] + "xH")
+
+    def test_leading_whitespace(self) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(" " + hello_json())
+
+    @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+    def test_nan_and_infinity(self, constant: str) -> None:
+        text = hello_json().replace('"tnum":0', f'"tnum":{constant}')
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(text)
+
+    def test_huge_float(self) -> None:
+        """
+        `1e999` is valid JSON that decodes to `inf`; it must not escape as an
+        `OverflowError` (it did in the Python 2 version).
+        """
+        text = hello_json().replace('"tnum":0', '"tnum":1e999')
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(text)
+
+    @pytest.mark.parametrize("hello", ["[]H", '"hi"H', "1H", "nullH", "H"])
+    def test_not_an_object(self, hello: str) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(hello)
+
+    def test_non_ascii_string_for_unknown_key(self) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(hello_json(unknown="\N{SNOWMAN}"))
+
+    @pytest.mark.parametrize(
+        ("key", "value"), [(k, v) for k, vs in BAD_HELLO_VALUES.items() for v in vs]
+    )
+    def test_invalid_values(self, key: str, value: object) -> None:
+        with pytest.raises(InvalidHello):
+            HelloFrame.decode(hello_json(**{key: value}))
+
+    def test_encode_decode_equality(self) -> None:
+        hello = make_hello(
+            http_format=HttpFormat.XHR,
+            max_inactivity=1,
+            sack=SACK(-1, ()),
+            wants_strings=True,
+            succeeds_transport=5,
+        )
+        assert HelloFrame.decode(hello.encode().decode()) == hello
+
+
+# --- The other frames -----------------------------------------------------------
+
+
+class TestEquality:
+    def test_same_fields_different_types(self) -> None:
+        assert StringFrame("x") != CommentFrame("x")
+        assert SackFrame(SACK(2, ())) != StreamStatusFrame(SACK(2, ()))
+        assert StreamCreatedFrame() != YouCloseItFrame()
+        assert StreamCreatedFrame() != ()
+
+    def test_fields(self) -> None:
+        assert StringFrame("Hello") == StringFrame("Hello")
+        assert StringFrame("Hello") != StringFrame("Hello2")
+        assert SeqNumFrame(2) != SeqNumFrame(3)
+        assert SackFrame(SACK(2, (1,))) != SackFrame(SACK(3, (2,)))
+        assert ResetFrame("why", True) != ResetFrame("why", False)
+        assert ResetFrame("why2", True) != ResetFrame("why", True)
+        assert TransportKillFrame(
+            KillReason.STREAM_ATTACH_FAILURE
+        ) != TransportKillFrame(KillReason.ACKED_UNSENT_STRINGS)
+
+
+def test_repr() -> None:
+    assert (
+        repr(SackFrame(SACK(2, (1, 4))))
+        == "SackFrame(sack=SACK(ack_number=2, sack_list=(1, 4)))"
+    )
+
+
+class TestStringFrame:
+    def test_decode_does_not_validate(self) -> None:
+        """
+        Restricted-string validation is the receiver's job.
+        """
+        assert StringFrame.decode("\x00unchecked\ttext ") == StringFrame(
+            "\x00unchecked\ttext"
+        )
+
+    def test_encode(self) -> None:
+        assert StringFrame("hello").encode() == b"hello "
+
+
+class TestCommentFrame:
+    def test_decode(self) -> None:
+        assert CommentFrame.decode("\x00unchecked\ttext^") == CommentFrame(
+            "\x00unchecked\ttext"
+        )
+
+    def test_encode(self) -> None:
+        assert CommentFrame(";)]}").encode() == b";)]}^"
+
+
+class TestSeqNumFrame:
+    @pytest.mark.parametrize("seq_num", [0, 1, 2**32, 2**53])
+    def test_decode(self, seq_num: int) -> None:
+        assert SeqNumFrame.decode(f"{seq_num}N") == SeqNumFrame(seq_num)
+
+    @pytest.mark.parametrize(
+        "text", ["-1N", f"{-(2**53)}N", f"{2**53 + 1}N", " ", "00N", "0" * 1024]
+    )
+    def test_decode_failed(self, text: str) -> None:
+        with pytest.raises(InvalidFrame):
+            SeqNumFrame.decode(text)
+
+    def test_encode(self) -> None:
+        assert SeqNumFrame(2).encode() == b"2N"
+        assert SeqNumFrame(0).encode() == b"0N"
+        assert SeqNumFrame(2**53).encode() == b"%dN" % 2**53
+
+
+class TestSackFrame:
+    @pytest.mark.parametrize("ack_number", [-1, 0, 1, 2**53])
+    def test_decode(self, ack_number: int) -> None:
+        assert SackFrame.decode(f"1,4|{ack_number}A") == SackFrame(
+            SACK(ack_number, (1, 4))
+        )
+
+    def test_decode_no_sack_numbers(self) -> None:
+        assert SackFrame.decode(f"|{2**53}A") == SackFrame(SACK(2**53, ()))
+
+    @pytest.mark.parametrize("bad_num", [2**53 + 1, -2, -1.01, 0.5, 1.5])
+    def test_bad_ack_number(self, bad_num: object) -> None:
+        with pytest.raises(InvalidFrame):
+            SackFrame.decode(f"1,4|{bad_num}A")
+
+    @pytest.mark.parametrize("bad_num", [2**53 + 1, -1, 0.5, 1.5])
+    def test_bad_sack_number(self, bad_num: object) -> None:
+        with pytest.raises(InvalidFrame):
+            SackFrame.decode(f"1,{bad_num}|4A")
+
+    @pytest.mark.parametrize("text", ["||4A", "", " ", "|", "1,,2|4A", ",|4A"])
+    def test_malformed(self, text: str) -> None:
+        with pytest.raises(InvalidFrame):
+            SackFrame.decode(text)
+
+    def test_encode(self) -> None:
+        assert SackFrame(SACK(2, (1, 4))).encode() == b"1,4|2A"
+        assert SackFrame(SACK(2, (4,))).encode() == b"4|2A"
+        assert SackFrame(SACK(2, ())).encode() == b"|2A"
+
+
+class TestStreamStatusFrame:
+    """
+    StreamStatusFrame is encoded just like SackFrame, so it needs fewer tests.
+    """
+
+    def test_decode(self) -> None:
+        assert StreamStatusFrame.decode("1,4|2T") == StreamStatusFrame(SACK(2, (1, 4)))
+
+    def test_encode(self) -> None:
+        assert StreamStatusFrame(SACK(2, (1, 4))).encode() == b"1,4|2T"
+
+
+@pytest.mark.parametrize("frame_type", [StreamCreatedFrame, YouCloseItFrame])
+class TestArgumentlessFrames:
+    def test_decode(
+        self, frame_type: type[StreamCreatedFrame | YouCloseItFrame]
+    ) -> None:
+        assert frame_type.decode(frame_type.TYPE) == frame_type()
+
+    def test_leading_garbage(
+        self, frame_type: type[StreamCreatedFrame | YouCloseItFrame]
+    ) -> None:
+        with pytest.raises(InvalidFrame):
+            frame_type.decode("extra stuff" + frame_type.TYPE)
+
+    def test_encode(
+        self, frame_type: type[StreamCreatedFrame | YouCloseItFrame]
+    ) -> None:
+        assert frame_type().encode() == frame_type.TYPE.encode()
+
+
+class TestResetFrame:
+    def test_encode(self) -> None:
+        assert ResetFrame("the reason", False).encode() == b"the reason|0!"
+        assert ResetFrame("the reason", True).encode() == b"the reason|1!"
+
+    @pytest.mark.parametrize("application_level", [True, False])
+    @pytest.mark.parametrize("reason", ["the reason", "the | | reason", "", "|", "||"])
+    def test_decode(self, reason: str, application_level: bool) -> None:
+        text = f"{reason}|{int(application_level)}!"
+        assert ResetFrame.decode(text) == ResetFrame(reason, application_level)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "\x7freason|0!",  # illegal character
+            "x" * 256 + "|0!",  # too long
+            "reason|2!",  # bad applicationLevel
+            "reason!",  # no applicationLevel; raised ValueError in the Python 2 version
+        ],
+    )
+    def test_decode_failed(self, text: str) -> None:
+        with pytest.raises(InvalidFrame):
+            ResetFrame.decode(text)
+
+
+class TestTransportKillFrame:
+    def test_encode(self) -> None:
+        assert (
+            TransportKillFrame(KillReason.FRAME_CORRUPTION).encode()
+            == b"frame_corruptionK"
+        )
+
+    @pytest.mark.parametrize("reason", KillReason)
+    def test_decode(self, reason: KillReason) -> None:
+        assert TransportKillFrame.decode(reason + "K") == TransportKillFrame(reason)
+
+    def test_decode_failed(self) -> None:
+        with pytest.raises(InvalidFrame):
+            TransportKillFrame.decode("not_a_reasonK")
+
+
+# --- Dispatch -------------------------------------------------------------------
+
+
+class TestDecodeFrame:
+    @pytest.mark.parametrize(
+        ("data", "frame"),
+        [
+            (b"hi ", StringFrame("hi")),
+            (b"|1A", SackFrame(SACK(1))),
+            (b"7N", SeqNumFrame(7)),
+            (b"why|1!", ResetFrame("why", True)),
+            (make_hello().encode(), make_hello()),
+        ],
+    )
+    def test_from_client(self, data: bytes, frame: ClientFrame) -> None:
+        assert decode_frame_from_client(data) == frame
+
+    @pytest.mark.parametrize(
+        ("data", "frame"),
+        [
+            (b"hi ", StringFrame("hi")),
+            (b"|1A", SackFrame(SACK(1))),
+            (b"7N", SeqNumFrame(7)),
+            (b"|1T", StreamStatusFrame(SACK(1))),
+            (b"Y", YouCloseItFrame()),
+            (b"beat^", CommentFrame("beat")),
+            (b"C", StreamCreatedFrame()),
+            (b"why|1!", ResetFrame("why", True)),
+            (b"rwin_overflowK", TransportKillFrame(KillReason.RWIN_OVERFLOW)),
+        ],
+    )
+    def test_from_server(self, data: bytes, frame: ServerFrame) -> None:
+        assert decode_frame_from_server(data) == frame
+
+    @pytest.mark.parametrize("data", [b"", b"?", b"x?", b"\xff ", b"caf\xc3\xa9 "])
+    def test_invalid(self, data: bytes) -> None:
+        with pytest.raises(InvalidFrame):
+            decode_frame_from_client(data)
+        with pytest.raises(InvalidFrame):
+            decode_frame_from_server(data)
+
+    @pytest.mark.parametrize("data", [b"beat^", b"C", b"Y", b"|1T", b"rwin_overflowK"])
+    def test_server_only_frames_from_client(self, data: bytes) -> None:
+        with pytest.raises(InvalidFrame):
+            decode_frame_from_client(data)
+
+    def test_hello_from_server(self) -> None:
+        with pytest.raises(InvalidFrame):
+            decode_frame_from_server(make_hello().encode())
+
+
+def test_hello_json_is_compact() -> None:
+    assert b" " not in encode_hello_json({"a": [1, 2], "b": {"c": None}})
+    assert json.loads(encode_hello_json({"a": 1})[:-1]) == {"a": 1}

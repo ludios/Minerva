@@ -3,3 +3,11 @@ root = true
 [*]
 indent_style = tab
 indent_size = 4
+
+[*.{py,toml,md}]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2

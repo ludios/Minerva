@@ -1,305 +1,199 @@
 """
-Incoming and outgoing frame windows used by Minerva, analogous to TCP windows.
+Send and receive windows for Minerva strings, analogous to TCP windows.
 
-This entire file is private; you should not need to import it.
+This module is private.
 """
 
-import sys
-import operator
-
-from strfrag import StringFragment
-
-_postImportVars = vars().keys()
-
-
-class SACK(tuple):
-	"""
-	Represents a SACK.
-	"""
-	__slots__ = ()
-	_MARKER = object()
-
-	ackNumber = property(operator.itemgetter(1))
-	sackList = property(operator.itemgetter(2))
-
-	def __new__(cls, ackNumber, sackList):
-		"""
-		C{ackNumber} is an C{int} or C{long}.
-		C{sackList} is a tuple of C{int}s and C{long}s.
-		"""
-		assert not isinstance(sackList, list)
-		return tuple.__new__(cls, (cls._MARKER, ackNumber, sackList))
-
-
-	def __repr__(self):
-		return '%s(%d, %r)' % (self.__class__.__name__, self[1], self[2])
-
-
-
-def totalSizeOf(s):
-	"""
-	@type s: C{str} or L{StringFragment}
-
-	@return An estimate of how much memory (in bytes) string C{s} consumes.
-	@rtype: C{int}
-	"""
-	return 30 + len(s)
-
-
-class Queue(object):
-	"""
-	A send queue which assigns a monotonically increasing integer
-	to each string.  It keeps each string until it is SACKed.
-
-	Useful if you need to queue strings that may need to be sent
-	multiple times (if a connection/transport fails).  It keeps track
-	of how much memory the Queue is using, in case you want to
-	do flow control.
-	"""
-	__slots__ = ('_counter', '_items', '_size')
-
-	def __init__(self):
-		self._counter = -1
-		self._items = {}
-		self._size = 0
-
-
-	def append(self, item):
-		size = totalSizeOf(item)
-		self._items[self._counter + 1] = (item, size)
-		self._counter += 1
-		self._size += size
-
-
-	def extend(self, items):
-		for item in items:
-			size = totalSizeOf(item)
-			self._items[self._counter + 1] = (item, size)
-			self._counter += 1
-			self._size += size
-
-
-	def __repr__(self):
-		return '<Queue at 0x%x with %r item(s), counter=#%r, size=%r>' % (
-			id(self), self.getQueuedCount(), self._counter, self._size)
-
-
-	def iterItems(self, start=None):
-		"""
-		Yield (seqNum, item) for every item in the queue.
-
-		If C{start} is not C{None}, items before L{start} will be skipped.
-		"""
-		if __debug__:
-			if start is not None:
-				assert start >= 0, start
-
-		sortedItems = self._items.items()
-		sortedItems.sort()
-		for seqNum, (item, size) in sortedItems:
-			if start is None or seqNum >= start:
-				yield (seqNum, item)
-
-
-	def handleSACK(self, sack):
-		"""
-		Remove all items that are no longer needed, based on C{sack}.
-
-		Returns C{True} if ackNumber or any sackNumber was higher
-		than the highest seqNum in the queue.  This would indicate a
-		"bad SACK".  Note that as many items as possible are removed
-		even in the "bad SACK" case.  If not bad SACK, returns C{False}.
-
-		@param sack: SACK information
-		@type sack: L{SACK}
-		"""
-		ackNum = sack.ackNumber
-		assert ackNum >= -1, ackNum
-
-		badSACK = False
-
-		if ackNum > self._counter:
-			badSACK = True
-
-		sortedKeys = self._items.keys()
-		sortedKeys.sort()
-
-		for k in sortedKeys:
-			if k > ackNum:
-				break
-			size = self._items[k][1]
-			del self._items[k]
-			self._size -= size
-
-		for sackNum in sack.sackList:
-			if sackNum > self._counter:
-				badSACK = True
-			try:
-				size = self._items[sackNum][1]
-				del self._items[sackNum]
-				self._size -= size
-			except KeyError:
-				pass
-
-		# Possibly reduce memory use by killing the old dict
-		if not self._items:
-			self._items = {}
-
-		return badSACK
-
-
-	def getQueuedCount(self):
-		return len(self._items)
-
-
-	def getMaxConsumption(self):
-		"""
-		@rtype: L{int}
-		@return: maximum possible consumption of the queued items.
-
-		Keep in mind that if queued items have children that point
-		to the same object, this may overreport how much memory is really
-		being consumed.
-		"""
-		return self._size
-
-
-
-class _wasSF(str):
-	"""
-	A marker class for objects that were a L{StringFragment}
-	before being converted to a str.
-	"""
-	__slots__ = ()
-
-
-
-class Incoming(object):
-	"""
-	A receive window which can accept in-order (but possibly with gaps)
-	numbered items, compute a SACK tuple for those items, and return
-	an Array of in-order deliverable items.  It keeps track of how much
-	memory the undeliverable items are using, and can reject items if
-	they would push Incoming over an item or memory size limit.
-
-	This is used to ensure that strings are delivered to the local *Stream
-	reliably and in-order.  Caller is responsible for protecting against
-	resource exhaustion attacks by checking the `hitLimit` value, or calling
-	{@link #getUndeliverableCount} or {@link #getMaxConsumption}.
-
-	Not-currently-deliverable L{StringFragment}s will be be converted to
-	C{str}s while in Incoming, and converted back when you retrieve them.
-	This is done because L{StringFragment}s may be referencing a giant
-	C{str}, which we don't want to keep around.  It's also easier to get the
-	size-in-memory of a C{str}.
-	"""
-	__slots__ = ('_lastAck', '_cached', '_size')
-
-	def __init__(self):
-		self._lastAck = -1
-
-		# A dictionary to store items given to us, but not yet deliverable
-		# (because there are gaps).
-		self._cached = {}
-
-		self._size = 0
-
-
-	def give(self, numAndItemSeq, itemLimit=None, sizeLimit=None):
-		"""
-		Simultaneously give new items, and get deliverable items.
-
-		@param numAndItemSeq: a sequence of *already sorted* (seqNum, strObj).
-			C{seqNum} may be an C{int}, C{long}, or integral C{float}.
-			C{strObj} may be a C{str} or L{StringFragment}.
-
-		@return: (list of deliverable items, hitLimit?) 
-		"""
-		# TODO: maybe immediately reject items that have little chance
-		# of delivery (seqNum far above lastAck + itemLimit) to further
-		# reduce the possibility of ACAs.  Right now we have enough ACA
-		# protection if itemLimit is no more than ~50.
-
-		deliverable = []
-		hitLimit = False
-		for num, item in numAndItemSeq:
-			assert isinstance(item, (str, StringFragment)), type(item)
-			if num < 0:
-				raise ValueError("Sequence num must be 0 or above, was %r" % (num,))
-
-			if num == self._lastAck + 1:
-				##print "deliverable.append(%r)" % (item,)
-				deliverable.append(item)
-				self._lastAck += 1
-				while True:
-					lastAckP1 = self._lastAck + 1
-					if not lastAckP1 in self._cached:
-						break
-					cachedItem, cachedSize = self._cached[lastAckP1]
-					##print "del self._cached[%r]" % (num,)
-					deliverable.append(
-						StringFragment(cachedItem, 0, len(cachedItem)) if \
-						isinstance(cachedItem, _wasSF) else cachedItem)
-					del self._cached[lastAckP1]
-					self._size -= cachedSize
-					self._lastAck = lastAckP1
-			elif num <= self._lastAck:
-				pass
-			else:
-				if itemLimit is not None and len(self._cached) >= itemLimit:
-					hitLimit = True
-					break
-				# Do the conversion here so that it applies only to the
-				# undeliverable items.
-				if isinstance(item, StringFragment):
-					item = _wasSF(item)
-				size = totalSizeOf(item)
-				if sizeLimit is not None and self._size + size > sizeLimit:
-					hitLimit = True
-					break
-				##print "self._cached[%r] = %r" % (num, item)
-				self._cached[num] = (item, size)
-				self._size += size
-
-		# Possibly reduce memory use by killing the old dict
-		if not self._cached:
-			self._cached = {}
-
-		return deliverable, hitLimit
-
-
-	def getSACK(self):
-		"""
-		@rtype: L{SACK}
-		@return: A SACK that represents which items Incoming has received.
-		"""
-		sackNumbers = self._cached.keys()
-		sackNumbers.sort()
-
-		return SACK(self._lastAck, tuple(sackNumbers))
-
-
-	def getUndeliverableCount(self):
-		"""
-		@rtype: L{int}
-		@return: the number of undeliverable items.
-		"""
-		return len(self._cached)
-
-
-	def getMaxConsumption(self):
-		"""
-		@rtype: L{int}
-		@return: maximum possible consumption of the undeliverable items.
-
-		Keep in mind that if undeliverable items have children that point
-		to the same object, this may overreport how much memory is really
-		being consumed.
-		"""
-		return self._size
-
-
-
-try: from refbinder.api import bindRecursive
-except ImportError: pass
-else: bindRecursive(sys.modules[__name__], _postImportVars)
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class SACK:
+    """
+    A selective acknowledgement.
+
+    `ack_number` is the highest sequence number up to which *everything* was
+    received (`-1` if nothing was).  `sack_list` holds the sequence numbers
+    above `ack_number` that were also received, in ascending order.
+    """
+
+    ack_number: int
+    sack_list: tuple[int, ...] = ()
+
+
+def total_size_of(s: str) -> int:
+    """
+    Estimate how much memory (in bytes) the string `s` consumes.
+    """
+    return 30 + len(s)
+
+
+class Queue:
+    """
+    A send queue that assigns a monotonically increasing sequence number to
+    each string, and keeps each string until it is SACKed.
+
+    It keeps strings around because they may need to be re-sent over a new
+    transport if the old one fails.  It also tracks how much memory the queued
+    strings use, in case you want to do flow control.
+    """
+
+    def __init__(self) -> None:
+        self._counter = -1
+        # seqNum -> (string, size).  Strings are always appended with
+        # increasing seqNums, so this dict is sorted by key.
+        self._items: dict[int, tuple[str, int]] = {}
+        self._size = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"<Queue at {id(self):#x} with {len(self)} item(s), "
+            f"counter=#{self._counter}, size={self._size}>"
+        )
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def append(self, item: str) -> None:
+        size = total_size_of(item)
+        self._counter += 1
+        self._items[self._counter] = (item, size)
+        self._size += size
+
+    def extend(self, items: Iterable[str]) -> None:
+        for item in items:
+            self.append(item)
+
+    def iter_items(self, start: int | None = None) -> Iterator[tuple[int, str]]:
+        """
+        Yield `(seq_num, string)` for every string in the queue, in order,
+        skipping those with `seq_num < start`.
+        """
+        assert start is None or start >= 0, start
+        for seq_num, (item, _size) in self._items.items():
+            if start is None or seq_num >= start:
+                yield seq_num, item
+
+    def handle_sack(self, sack: SACK) -> bool:
+        """
+        Remove every string that `sack` acknowledges.
+
+        Returns `True` for a "bad SACK": one that acknowledges a sequence
+        number we never assigned.  As many strings as possible are removed
+        even then.
+        """
+        ack_number = sack.ack_number
+        assert ack_number >= -1, ack_number
+
+        bad_sack = ack_number > self._counter or any(
+            n > self._counter for n in sack.sack_list
+        )
+
+        for seq_num in list(self._items):
+            if seq_num > ack_number:
+                break
+            self._remove(seq_num)
+        for seq_num in sack.sack_list:
+            if seq_num in self._items:
+                self._remove(seq_num)
+
+        # Possibly reduce memory use by dropping the old (resized) dict.
+        if not self._items:
+            self._items = {}
+
+        return bad_sack
+
+    def _remove(self, seq_num: int) -> None:
+        _item, size = self._items.pop(seq_num)
+        self._size -= size
+
+    def get_max_consumption(self) -> int:
+        """
+        Return the maximum possible memory consumption of the queued strings.
+        """
+        return self._size
+
+
+class Incoming:
+    """
+    A receive window.  It accepts numbered strings in order (possibly with
+    gaps), computes a SACK for them, and returns the strings that are now
+    deliverable in order.
+
+    It tracks how much memory the not-yet-deliverable strings use, and can
+    refuse strings that would push it over an item-count or memory limit.
+    This protects against a peer that never fills the gaps; it is the
+    caller's job to act on `hit_limit`.
+    """
+
+    def __init__(self) -> None:
+        self._last_ack = -1
+        # seqNum -> (string, size) for strings received but not yet
+        # deliverable, because there is a gap before them.
+        self._cached: dict[int, tuple[str, int]] = {}
+        self._size = 0
+
+    def give(
+        self,
+        items: Iterable[tuple[int, str]],
+        item_limit: int | None = None,
+        size_limit: int | None = None,
+    ) -> tuple[list[str], bool]:
+        """
+        Give new `(seq_num, string)` items, and get the deliverable strings.
+
+        `items` should already be sorted by `seq_num`; unsorted items work,
+        but are more likely to hit the limits.
+
+        Returns `(deliverable_strings, hit_limit)`.  Once a limit is hit, the
+        rest of `items` is dropped.
+        """
+        # TODO: maybe immediately reject items that have little chance of
+        # delivery (seq_num far above last_ack + item_limit).
+        deliverable: list[str] = []
+        for seq_num, item in items:
+            if seq_num < 0:
+                raise ValueError(f"Sequence num must be 0 or above, was {seq_num!r}")
+
+            if seq_num == self._last_ack + 1:
+                deliverable.append(item)
+                self._last_ack += 1
+                while (
+                    cached := self._cached.pop(self._last_ack + 1, None)
+                ) is not None:
+                    cached_item, cached_size = cached
+                    deliverable.append(cached_item)
+                    self._size -= cached_size
+                    self._last_ack += 1
+            elif seq_num > self._last_ack:
+                if item_limit is not None and len(self._cached) >= item_limit:
+                    return deliverable, True
+                size = total_size_of(item)
+                if size_limit is not None and self._size + size > size_limit:
+                    return deliverable, True
+                self._cached[seq_num] = (item, size)
+                self._size += size
+            # else: already delivered; ignore it.
+
+        # Possibly reduce memory use by dropping the old (resized) dict.
+        if not self._cached:
+            self._cached = {}
+
+        return deliverable, False
+
+    def get_sack(self) -> SACK:
+        """
+        Return a SACK that describes which strings we have received.
+        """
+        return SACK(self._last_ack, tuple(sorted(self._cached)))
+
+    def get_undeliverable_count(self) -> int:
+        return len(self._cached)
+
+    def get_max_consumption(self) -> int:
+        """
+        Return the maximum possible memory consumption of the undeliverable
+        strings.
+        """
+        return self._size

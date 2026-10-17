@@ -1,159 +1,120 @@
 """
-Validation for objects received over the wire.
+Strict validation for values received over the wire.
 
-This entire file is private; you should not need to import it.  If you need
-similar validations, copy the code and unit tests.
+This module is private.  If you need similar validation, copy the code and its
+tests.
+
+Peers should not get away with sloppy encodings that just happen to work with
+today's server, so these are deliberately stricter than `int()`, which happily
+accepts `" -0"`, `"1_000"`, `"٣"` (Arabic-Indic three), and so on.
 """
 
-import sys
 import re
-from math import log10
 
-_postImportVars = vars().keys()
-
-
-# Neither of these accept "-0"
-_OKAY_NONNEG_INT = re.compile(r'^(0|[1-9]\d*)$')
-_OKAY_INT = re.compile(r'^(0|\-?[1-9]\d*)$')
-
-def strToNonNeg(value):
-	"""
-	A very strict numeric-string to non-zero integer converter.
-	This should help prevent people from developing buggy clients
-	that just happen to work with our current server.
-
-	We don't use Python's int() because it allows a lot of things,
-	including int('-0') and int(' -0').
-
-	Raises C{ValueError} if negative.
-	"""
-	if _OKAY_NONNEG_INT.match(value):
-		return int(value)
-
-	raise ValueError("could not decode to non-negative integer: %r" % (value,))
+# `[0-9]` rather than `\d`, which also matches non-ASCII digits in str
+# patterns.  Use with `fullmatch`; `$` would also match before a trailing "\n".
+# Neither pattern accepts "-0" or leading zeros.
+_NON_NEG_INT = re.compile(r"0|[1-9][0-9]*")
+_INT = re.compile(r"0|-?[1-9][0-9]*")
 
 
-def strToNonNegLimit(value, limit):
-	"""
-	Like L{strToNonNeg}, except with a numerical limit C{limit}.
+def str_to_non_neg(value: str) -> int:
+    """
+    Convert a strictly-formatted decimal string to a non-negative `int`.
 
-	Raises C{ValueError} if too high (or negative).
-	"""
-	# Optimizations for the common case
-	if limit == 2**53:
-		declenlimit = 16
-	elif limit == 2**31 - 1:
-		declenlimit = 10
-	else:
-		declenlimit = int(log10(limit) + 1) if limit != 0 else 1
-
-	if len(value) > declenlimit:
-		raise ValueError("too high")
-
-	if _OKAY_NONNEG_INT.match(value):
-		num = int(value)
-		if num > limit:
-			raise ValueError("too high")
-		return num
-
-	raise ValueError("could not decode to non-negative integer: %r" % (value,))
+    Raises `ValueError` if `value` is not of the form `0` or `[1-9][0-9]*`.
+    """
+    if not _NON_NEG_INT.fullmatch(value):
+        raise ValueError(f"could not decode to non-negative integer: {value!r}")
+    return int(value)
 
 
-def strToIntInRange(value, lower, upper):
-	"""
-	A very strict numeric-string to integer converter.
-
-	@rtype: L{int} or L{long}
-	@return: C{value} as converted from a str to an int/long.
-
-	Raises C{ValueError} if too high or too low.
-	"""
-	if _OKAY_INT.match(value):
-		num = int(value)
-	else:
-		raise ValueError("value %r does not look numeric" % (value,))
-
-	if not lower <= num <= upper:
-		raise ValueError("value %r not in range [%r, %r]" % (value, lower, upper))
-
-	return num
+def str_to_non_neg_limit(value: str, limit: int) -> int:
+    """
+    Like `str_to_non_neg`, but also raise `ValueError` if the number is
+    greater than `limit`.
+    """
+    # Reject absurdly long strings before parsing them.
+    if len(value) > len(str(limit)):
+        raise ValueError(f"{value!r} is too high; limit is {limit}")
+    number = str_to_non_neg(value)
+    if number > limit:
+        raise ValueError(f"{value!r} is too high; limit is {limit}")
+    return number
 
 
-def ensureInt(value):
-	"""
-	Convert C{value} from a L{float} to an equivalent L{int}/L{long} if
-	possible, else raise L{ValueError}.  C{int}s and C{long}s pass through.
-
-	@rtype: L{int} or L{long}
-	@return: non-float equivalent of C{value}
-	"""
-	if value is True or value is False:
-		raise TypeError("Even though int(False) and int(True) work, we disallow it.")
-	inted = int(value)
-	if inted != value:
-		raise ValueError("%r cannot be converted to identical integer" % (value,))
-	return inted
+def str_to_int_in_range(value: str, lower: int, upper: int) -> int:
+    """
+    Convert a strictly-formatted decimal string to an `int` in the inclusive
+    range [`lower`, `upper`].  Raises `ValueError` otherwise.
+    """
+    if not _INT.fullmatch(value):
+        raise ValueError(f"value {value!r} does not look numeric")
+    number = int(value)
+    if not lower <= number <= upper:
+        raise ValueError(f"value {value!r} not in range [{lower}, {upper}]")
+    return number
 
 
-def ensureNonNegInt(value):
-	"""
-	Check that C{value} is non-negative and convert it to it an equivalent
-	non-L{float} if necessary, else raise L{ValueError}.
+def ensure_int(value: int | float) -> int:
+    """
+    Convert an integral `float` to the equal `int`; pass `int`s through.
 
-	@rtype: L{int} or L{long}
-	@return: non-float equivalent of C{value}
-
-	Useful after getting some deserialized JSON with random stuff in it.
-	"""
-
-	if isinstance(value, (int, long, float)) and value is not True and value is not False:
-		if value < 0:
-			raise ValueError("%r is < 0" % (value,))
-		elif isinstance(value, float):
-			return ensureInt(value)
-		else:
-			return value
-	else:
-		raise TypeError("%r is not an int/long/float" % (value,))
-
-
-def ensureNonNegIntLimit(value, limit):
-	"""
-	Check that C{value} is non-negative and C{<= limit} and
-	convert it to it an equivalent non-L{float} if necessary, else raise L{ValueError}.
-
-	@rtype: L{int} or L{long}
-	@return: non-float equivalent of C{value}
-
-	Useful after getting some deserialized JSON with random stuff in it.
-	"""
-	v = ensureNonNegInt(value)
-	if v > limit:
-		raise ValueError("%r is > limit %r" % (value, limit))
-	return v
+    Raises `ValueError` if `value` has a fractional part, and `TypeError` for
+    `bool`s (even though `int(True)` works) and non-numbers.
+    """
+    if isinstance(value, bool):
+        raise TypeError("bools are not accepted as integers")
+    if not isinstance(value, int | float):
+        raise TypeError(f"{value!r} is not an int or float")
+    # int() raises OverflowError for infinities and ValueError for NaN.
+    try:
+        inted = int(value)
+    except OverflowError:
+        raise ValueError(f"{value!r} cannot be converted to an integer") from None
+    if inted != value:
+        raise ValueError(f"{value!r} cannot be converted to an identical integer")
+    return inted
 
 
-def ensureBool(value):
-	"""
-	Convert 1, 1.0, and True to True.
-	Convert 0, 0.0, -0.0, and False to False.
-	For all other values, raise L{ValueError}.
+def ensure_non_neg_int(value: object) -> int:
+    """
+    Return `value` as an `int` if it is a non-negative integer (or an integral
+    `float`, as JSON decoders may produce).
 
-	@rtype: L{bool}
-	@return: non-number equivalent of C{value}
-
-	This is useful when getting JSON-decoded values from a peer, and you
-	do not want to keep their bool-equivalent numbers around in memory.
-	"""
-	if value == True:
-		return True
-	elif value == False:
-		return False
-	else:
-		raise ValueError("%r is not bool-equivalent to True or False" % (value,))
+    Raises `TypeError` for non-numbers and `bool`s, and `ValueError` for
+    negative or non-integral numbers.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{value!r} is not an int or float")
+    if value < 0:
+        raise ValueError(f"{value!r} is < 0")
+    return ensure_int(value)
 
 
+def ensure_non_neg_int_limit(value: object, limit: int) -> int:
+    """
+    Like `ensure_non_neg_int`, but also raise `ValueError` if the number is
+    greater than `limit`.
+    """
+    number = ensure_non_neg_int(value)
+    if number > limit:
+        raise ValueError(f"{value!r} is > limit {limit!r}")
+    return number
 
-try: from refbinder.api import bindRecursive
-except ImportError: pass
-else: bindRecursive(sys.modules[__name__], _postImportVars)
+
+def ensure_bool(value: object) -> bool:
+    """
+    Convert `1`, `1.0`, and `True` to `True`, and `0`, `0.0`, `-0.0`, and
+    `False` to `False`.  Raise `ValueError` for anything else.
+
+    Useful for JSON from a peer that may send `0`/`1` for booleans, when you
+    don't want to keep the numbers around.
+    """
+    # `isinstance` first, so that objects with a weird `__eq__` can't sneak in.
+    if isinstance(value, int | float):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    raise ValueError(f"{value!r} is not bool-equivalent to True or False")

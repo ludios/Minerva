@@ -1,182 +1,131 @@
 """
-Protocols that convert a stream of bytes into Minerva frames.
+Framers that split a stream of bytes into Minerva frames (and back).
 
-This entire file is private; you should not need to import it.  If you do, file
-a bug.
+HTTP transports use newline-delimited frames; the Flash socket transport uses
+frames prefixed with a 32-bit big-endian length.
+
+This module is private.
 """
 
-import sys
 import struct
-from strfrag import StringFragment
+from typing import ClassVar, Protocol
 
-_postImportVars = vars().keys()
 
+class FrameTooLong(Exception):
+    """
+    The peer sent (or is sending) a frame longer than the decoder's
+    `max_length`.  The stream can't be decoded any further.
+    """
 
 
 class StringTooLongError(Exception):
-	"""
-	The string is too long to encode.
-	"""
+    """
+    The string is too long to encode.
+    """
 
 
+class Decoder(Protocol):
+    def feed(self, data: bytes) -> list[bytes]: ...
 
-# possible result codes for the (frames, result_code) return values
-OK, TOO_LONG = range(2)
-
-
-class DelimitedStringDecoder(object):
-	r"""
-	Decodes a stream of (1-byte-delimiter)-terminated bytestrings.
-
-	Returns L{strfrag.StringFragment} objects instead of C{str} objects to
-	reduce copying.
-	"""
-	# delimiter *must* be 1 byte.  Do not change it after any data has been
-	# received.
-	delimiter = '\n'
-
-	__slots__ = ('maxLength', '_buffer')
-
-	def __init__(self, maxLength):
-		self.maxLength = maxLength
-		self._buffer = ''
+    @classmethod
+    def encode(cls, frame: bytes) -> bytes: ...
 
 
-	@classmethod
-	def encode(cls, s):
-		s += cls.delimiter
-		return s
+class DelimitedStringDecoder:
+    """
+    Decodes a stream of newline-terminated byte strings.
+    """
+
+    # This *must* be 1 byte; `feed` relies on it.
+    delimiter: ClassVar[bytes] = b"\n"
+
+    def __init__(self, max_length: int) -> None:
+        self.max_length = max_length
+        self._buffer = bytearray()
+
+    @classmethod
+    def encode(cls, frame: bytes) -> bytes:
+        """
+        Delimit `frame`.  The caller must make sure that it contains no
+        delimiter bytes.
+        """
+        return frame + cls.delimiter
+
+    def feed(self, data: bytes) -> list[bytes]:
+        """
+        Add `data` to the buffer and return the complete frames in it.
+
+        Raises `FrameTooLong` if a frame exceeds `max_length`, and keeps
+        raising it if fed more data afterwards.
+        """
+        self._buffer += data
+        buffer = self._buffer
+        # Look for the delimiter only in the new data, so that a peer can't
+        # make us repeatedly rescan a big buffer by dribbling in one byte at a
+        # time.  This works because the delimiter is a single byte.
+        if self.delimiter not in data:
+            self._check_length(len(buffer))
+            return []
+
+        frames = []
+        at = 0
+        while (end := buffer.find(self.delimiter, at)) != -1:
+            self._check_length(end - at)
+            frames.append(bytes(buffer[at:end]))
+            at = end + 1
+        del buffer[:at]
+        self._check_length(len(buffer))
+        return frames
+
+    def _check_length(self, length: int) -> None:
+        if length > self.max_length:
+            raise FrameTooLong(f"{length} > {self.max_length}")
 
 
-	def getNewFrames(self, data):
-		# This should re-return the correct error code when more data is
-		# fed into it, even after the error code was already returned.
-		de = self.delimiter
-		m = self.maxLength
+class Int32StringDecoder:
+    """
+    Decodes a stream of byte strings, each prefixed by its length as a
+    big-endian unsigned 32-bit integer.
+    """
 
-		self._buffer += data
-		completeStrings = []
-		# Stop the "dribble in bytes slowly" attack (where entire buffer is
-		# repeatedly scanned for \n).  This trick works here because our
-		# delimiter is 1 byte.
-		if de not in data:
-			if len(self._buffer) > m:
-				return completeStrings, TOO_LONG
-			return completeStrings, OK
-		at = 0
-		while True:
-			# Find the delimiter that ends the string we're about to extract
-			endsAt = self._buffer.index(de, at)
-			if endsAt - at > m:
-				return completeStrings, TOO_LONG
-			# Note that if the user keeps the StringFragment around, the next
-			# `self._buffer += data` will not be optimized (in CPython).
-			completeStrings.append(
-				StringFragment(self._buffer, at, endsAt - at))
-			at = endsAt + 1
-			# If there's no delimiter after that delimiter, break.
-			if self._buffer.find(de, at) == -1:
-				break
-		self._buffer = self._buffer[at:]
-		if len(self._buffer) > m:
-			return completeStrings, TOO_LONG
-		return completeStrings, OK
+    prefix: ClassVar[struct.Struct] = struct.Struct("!I")
 
+    def __init__(self, max_length: int) -> None:
+        self.max_length = max_length
+        self._buffer = bytearray()
 
+    @classmethod
+    def encode(cls, frame: bytes) -> bytes:
+        """
+        Length-prefix `frame`.
+        """
+        if len(frame) >= 2 ** (8 * cls.prefix.size):
+            raise StringTooLongError(
+                f"Cannot encode {len(frame)} bytes in a {cls.prefix.size}-byte prefix"
+            )
+        return cls.prefix.pack(len(frame)) + frame
 
-class IntNStringDecoder(object):
-	"""
-	Generic class for length prefixed protocols.
+    def feed(self, data: bytes) -> list[bytes]:
+        """
+        Add `data` to the buffer and return the complete frames in it.
 
-	@cvar structFormat: format used for struct packing/unpacking.  Define it
-		in a subclass.
-	@type structFormat: C{str}
-
-	@cvar prefixLength: length of the prefix, in bytes.  Define it in a
-		subclass, using C{struct.calcsize(structFormat)}
-	@type prefixLength: C{int}
-
-	@cvar maxPossibleLength: maximum possible length of a string, in bytes.
-		Define it in subclass, using C{2 ** (8 * prefixLength)}
-	@type maxPossibleLength: C{int}
-	"""
-
-	__slots__ = ('maxLength', '_buffer')
-
-	def __init__(self, maxLength):
-		self.maxLength = maxLength
-		self._buffer = ""
-
-
-	@classmethod
-	def encode(cls, s):
-		"""
-		Encode a string into a length-prefixed string.
-
-		@type s: C{str}
-		"""
-		lenData = len(s)
-		if lenData >= cls.maxPossibleLength:
-			raise StringTooLongError(
-				"Cannot encode %s bytes; maximum is %s" % (
-				lenData, cls.maxPossibleLength))
-		return struct.pack(cls.structFormat, lenData) + s
-
-
-	def getNewFrames(self, data):
-		# Keep in mind that this must work with 0-length strings.
-
-		# This should re-return TOO_LONG when more data is fed into it, if
-		# TOO_LONG was already returned.
-
-		# This function will sometimes unpack the prefix many times for
-		# the same string, depending on how many getNewFrames calls it
-		# takes to arrive.  struct.unpack is fast in CPython 2.7, so this
-		# doesn't matter.
-
-		self._buffer += data
-		pLen = self.prefixLength
-		lenBuffer = len(self._buffer)
-		strings = []
-		at = 0
-		
-		while True:
-			if lenBuffer - at < pLen: # not enough to read next prefix?
-				break
-			at_pLen = at + pLen
-			length, = struct.unpack(self.structFormat, self._buffer[at:at_pLen])
-			if length > self.maxLength:
-				##print "Too long", length
-				return strings, TOO_LONG
-			if lenBuffer - at < length + pLen: # not enough to read next string?
-				break
-			strings.append(StringFragment(self._buffer, at_pLen, length))
-			at = at_pLen + length # move to the right
-
-		# Because the StringFragment(s) point to the old _buffer, this may
-		# create a copy.
-		self._buffer = self._buffer[at:]
-		return strings, OK
-
-
-
-class Int32StringDecoder(IntNStringDecoder):
-	"""
-	A receiver for int32-prefixed strings.
-
-	An int32 string is a string prefixed by 4 bytes, the 32-bit length of
-	the string encoded in network byte order.
-
-	This class publishes the same interface as NetstringReceiver.
-	"""
-	__slots__ = ()
-
-	structFormat = "!I"
-	prefixLength = struct.calcsize(structFormat)
-	maxPossibleLength = 2 ** (8 * prefixLength)
-
-
-
-try: from refbinder.api import bindRecursive
-except ImportError: pass
-else: bindRecursive(sys.modules[__name__], _postImportVars)
+        Raises `FrameTooLong` as soon as a length prefix exceeds `max_length`,
+        and keeps raising it if fed more data afterwards.
+        """
+        self._buffer += data
+        buffer = self._buffer
+        prefix_length = self.prefix.size
+        frames = []
+        at = 0
+        # Keep in mind that 0-length frames are valid.
+        while len(buffer) - at >= prefix_length:
+            (length,) = self.prefix.unpack_from(buffer, at)
+            if length > self.max_length:
+                raise FrameTooLong(f"{length} > {self.max_length}")
+            start = at + prefix_length
+            if len(buffer) - start < length:
+                break
+            frames.append(bytes(buffer[start : start + length]))
+            at = start + length
+        del buffer[:at]
+        return frames
