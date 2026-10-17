@@ -564,3 +564,7 @@ def main(argv: Sequence[str] | None = None) -> NoReturn:
     configure_logging(args.verbose)
     _warn_about_setup(args)
     task.react(serve, [args])
+
+
+if __name__ == "__main__":
+    main()

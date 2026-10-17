@@ -454,3 +454,29 @@ def test_web_port_children(clock: Clock, mock_tracker: DummyStreamTracker) -> No
         child = children[name]
         assert isinstance(child, File)
         assert child.exists()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_get_info(resource: HttpIo, tracker: StreamTracker, streaming: bool) -> None:
+    create_stream(resource, streaming=True)
+    request = FakeRequest(
+        make_http_hello(
+            request_new_stream=False,
+            transport_number=3,
+            wants_strings=True,
+            streaming_response=streaming,
+        ).encode()
+        + b"\n"
+    )
+    request.requestHeaders.setRawHeaders(b"user-agent", [b"test"])
+    resource.render(request)
+    stream = tracker.get_stream(STREAM_ID)
+    transport = stream._primary_transport
+    assert transport is not None
+    info = transport.get_info()
+    assert info.transport_number == 3
+    assert info.is_primary is True
+    assert info.streaming_from_peer is False
+    assert info.streaming_to_peer is streaming
+    assert info.request_headers is request.requestHeaders
+    assert info.host == request.getHost()

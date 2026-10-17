@@ -799,3 +799,16 @@ class TestServerTransportFactory:
         transport = factory.buildProtocol(IPv4Address("TCP", "127.0.0.1", 0))  # ty: ignore[invalid-argument-type]
         assert isinstance(transport, ServerTransport)
         assert transport.factory is factory
+
+
+@pytest.mark.parametrize("wants_strings", [True, False])
+def test_get_info(connect: Callable[[], SocketPeer], wants_strings: bool) -> None:
+    peer = connect()
+    peer.send(make_hello(transport_number=7, wants_strings=wants_strings))
+    info = peer.transport.get_info()
+    assert info.transport_number == 7
+    assert info.is_primary is wants_strings
+    assert info.streaming_from_peer is True
+    assert info.streaming_to_peer is True
+    assert info.request_headers is None
+    assert info.host == peer.tcp.getHost()

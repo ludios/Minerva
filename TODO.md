@@ -182,7 +182,7 @@
       pages delay it with an <img> from WaitResource.  The standalone client
       can only long-poll; streaming/Flash/subdomains need the uncompiled
       client (closure-library; phase 11).
-- [ ] 9. README, CHANGES (behavior changes), .editorconfig, CI workflow.
+- [x] 9. README, CHANGES (behavior changes), .editorconfig, CI workflow.
 - [ ] 10. Review pass: `/code-review`-style self review; consult Fable/Astra;
       grep `XXX(port)`.
 - [ ] 11. (stretch) closure-library for dev mode/JS tests; note TS plan.

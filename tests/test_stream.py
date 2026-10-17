@@ -784,3 +784,51 @@ class TestStreamTracker:
         for n in range(3):
             with pytest.raises(NoSuchStream):
                 tracker.get_stream(f"idle stream {n}")
+
+
+class _RaisingTransportListener(_TransportListener):
+    def transport_created(self, transport_info: TransportInfo) -> None:
+        super().transport_created(transport_info)
+        raise ZeroDivisionError
+
+    def transport_destroyed(self, transport_info: TransportInfo) -> None:
+        super().transport_destroyed(transport_info)
+        raise ZeroDivisionError
+
+
+def test_transport_listeners_raise(
+    clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Exceptions from `transport_created` and `transport_destroyed` are logged,
+    and the transport still becomes primary (or goes offline).
+    """
+
+    class Factory(MockStringFactory):
+        def build_protocol(self) -> _RaisingTransportListener:
+            return _RaisingTransportListener(self)
+
+    stream = ServerStream(clock, "some fake id", Factory())
+    t1 = DummySocketLikeTransport()
+    stream.send_string("s")
+    stream.transport_online(t1, True, None)
+    assert t1.get_new() == [["write_strings", stream.queue, 0]]
+    stream.transport_offline(t1)
+    assert len(logged_exceptions(caplog, ZeroDivisionError)) == 2
+    assert stream._primary_transport is None
+
+
+def test_calls_after_reset_are_ignored(
+    stream: ServerStream, factory: MockStringFactory, t1: DummySocketLikeTransport
+) -> None:
+    stream.transport_online(t1, True, None)
+    stream.reset("bye")
+    t1.get_new()
+    factory.instance.get_new()
+
+    stream.strings_received(t1, [(0, "late")])
+    stream.reset_from_peer("late", True)
+    t2 = DummySocketLikeTransport()
+    stream.transport_online(t2, True, None)
+    assert factory.instance.get_new() == []
+    assert t1.get_new() == t2.get_new() == []

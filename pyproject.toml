@@ -33,6 +33,7 @@ minerva-site = "minerva.site:main"
 
 [dependency-groups]
 dev = [
+    "coverage>=7.10",
     "hypothesis>=6.150",
     "pytest>=9.0",
     "ruff>=0.17",
@@ -121,6 +122,17 @@ python-version = "3.15"
 [tool.ty.src]
 exclude = ["minerva/"]
 
+
+[tool.coverage.run]
+source_pkgs = ["minerva"]
+branch = true
+# Measure the subprocesses (minerva-site, the browser test server) too.
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:", "\\.\\.\\.$"]
 
 [tool.pytest]
 minversion = "9.0"

@@ -3,6 +3,11 @@ Tests for `minerva.site`, the development server.
 """
 
 import json
+import re
+import socket
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -247,3 +252,45 @@ class TestWaitResource:
         WaitResource(clock).render(request)
         request.processingFailed(Exception("gone"))
         assert clock.getDelayedCalls() == []
+
+
+def test_command_line(tmp_path: Path) -> None:
+    """
+    `minerva-site` listens on the endpoints it's given (here, ephemeral
+    ports), and tells clients the actual socket port.
+    """
+    command = [
+        sys.executable,
+        "-m",
+        "minerva.site",
+        "--http",
+        "tcp:0:interface=127.0.0.1",
+    ]
+    command += ["--minerva", "tcp:0:interface=127.0.0.1", "--coreweb", str(tmp_path)]
+    with subprocess.Popen(command, stderr=subprocess.PIPE, text=True) as server:
+        try:
+            assert server.stderr is not None
+            ports: dict[str, int] = {}
+            while len(ports) < 2:
+                line = server.stderr.readline()
+                assert line, "minerva-site exited early"
+                if match := re.search(
+                    r"(HTTP server|socket listener) on .*port=(\d+)", line
+                ):
+                    ports[match[1]] = int(match[2])
+            http_port, socket_port = ports["HTTP server"], ports["socket listener"]
+
+            url = f"http://127.0.0.1:{http_port}/@testres_Minerva/GetEndpointInfo/"
+            with urllib.request.urlopen(url, timeout=10) as response:
+                assert json.load(response) == {"mainSocketPort": socket_port}
+
+            with socket.create_connection(
+                ("127.0.0.1", socket_port), timeout=10
+            ) as sock:
+                sock.sendall(b"<policy-file-request/>\x00")
+                assert f'to-ports="{socket_port}"'.encode() in sock.recv(4096)
+        finally:
+            server.terminate()
+            # Drain stderr, so that the server can log its shutdown.
+            server.communicate(timeout=10)
+    assert server.returncode == 0
