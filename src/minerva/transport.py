@@ -10,7 +10,8 @@ POST body.
 
 import dataclasses
 import logging
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, auto
 from operator import itemgetter
@@ -123,8 +124,9 @@ class _Mode(Enum):
     HTTP = auto()
 
 
-# Sent as the first frame over HTTP transports, to defeat JSON hijacking-style
-# attacks that try to load the response as a script.
+# Sent as the first frame over HTTP transports.  It stops attackers who include
+# script tags pointing to a WebPort URL, and keeps the client from parsing a
+# page returned by an intermediary (like a proxy or a WiFi paywall) as frames.
 HTTP_RESPONSE_PREAMBLE = CommentFrame(";)]}")
 
 _POLICY_FILE_REQUEST = b"<policy-file-request/>\x00"
@@ -209,14 +211,29 @@ class ServerTransport(TwistedProtocol):
         """
         return self._stream is not None
 
+    @contextmanager
+    def _calling_the_stream(self) -> Generator[None]:
+        """
+        While we call the stream, it may call us back (to write strings, or
+        to close us); we write to the peer only after the call returns.
+        """
+        self._calling_stream = True
+        try:
+            yield
+        finally:
+            self._calling_stream = False
+
     # --- Writing ------------------------------------------------------------------
 
-    def _write(self, data: bytes) -> None:
+    @property
+    def _writable(self) -> _TcpTransport | _Request:
         if self._request is not None:
-            self._request.write(data)
-        else:
-            assert self._tcp is not None
-            self._tcp.write(data)
+            return self._request
+        assert self._tcp is not None
+        return self._tcp
+
+    def _write(self, data: bytes) -> None:
+        self._writable.write(data)
 
     def _encode_frame(self, frame: Frame) -> bytes:
         assert self._parser is not None
@@ -390,9 +407,7 @@ class ServerTransport(TwistedProtocol):
         return self._streaming_response
 
     def get_host(self) -> IAddress:
-        writable = self._request or self._tcp
-        assert writable is not None
-        return writable.getHost()
+        return self._writable.getHost()
 
     # --- Timers -------------------------------------------------------------------
 
@@ -490,13 +505,12 @@ class ServerTransport(TwistedProtocol):
             return
 
         self._stream = stream
-        self._calling_stream = True
-        stream.transport_online(
-            self,
-            hello.wants_strings,
-            hello.succeeds_transport if hello.wants_strings else None,
-        )
-        self._calling_stream = False
+        with self._calling_the_stream():
+            stream.transport_online(
+                self,
+                hello.wants_strings,
+                hello.succeeds_transport if hello.wants_strings else None,
+            )
         # A lot can happen underneath `transport_online`: it may have created a
         # protocol, which may even have reset the stream.
         if self._terminating:
@@ -534,11 +548,8 @@ class ServerTransport(TwistedProtocol):
             # stream writes while we call it.
             assert not self._sack_dirty, self
             self._sack_dirty = True
-            self._calling_stream = True
-            try:
+            with self._calling_the_stream():
                 self._stream.strings_received(self, strings)
-            finally:
-                self._calling_stream = False
             # Underneath that call, a lot can happen, including calls to our own
             # `write_reset` or `close_gently` or `write_strings`.
             if not self._terminating and self._sack_dirty:
@@ -584,9 +595,8 @@ class ServerTransport(TwistedProtocol):
                     bunched_strings.append((self._peer_seq_num, string))
 
                 case SackFrame(sack):
-                    self._calling_stream = True
-                    bad_sack = self._stream.sack_received(sack)
-                    self._calling_stream = False
+                    with self._calling_the_stream():
+                        bad_sack = self._stream.sack_received(sack)
                     if bad_sack:
                         kill(KillReason.ACKED_UNSENT_STRINGS)
                         break
@@ -599,9 +609,10 @@ class ServerTransport(TwistedProtocol):
                     # is an implementation detail that may change.
                     deliver_strings()
                     if not self._terminating:
-                        self._calling_stream = True
-                        self._stream.reset_from_peer(reason_string, application_level)
-                        self._calling_stream = False
+                        with self._calling_the_stream():
+                            self._stream.reset_from_peer(
+                                reason_string, application_level
+                            )
                     # Frames after a reset frame are ignored.
                     break
 
@@ -748,10 +759,8 @@ class ServerTransport(TwistedProtocol):
         self._producer = producer
         if streaming and self._paused:
             producer.pauseProducing()
-        writable = self._request or self._tcp
-        assert writable is not None
         # We are the producer for the underlying TCP transport or request.
-        writable.registerProducer(self, streaming)
+        self._writable.registerProducer(self, streaming)
         self._maybe_write_to_peer()
 
     def unregisterProducer(self) -> None:
@@ -759,9 +768,7 @@ class ServerTransport(TwistedProtocol):
         Called by the `ServerStream`.
         """
         self._producer = None
-        writable = self._request or self._tcp
-        assert writable is not None
-        writable.unregisterProducer()
+        self._writable.unregisterProducer()
 
     # Called by Twisted.  We trust Twisted to call this only if we registered
     # as a push producer.

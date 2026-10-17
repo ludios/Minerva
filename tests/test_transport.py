@@ -812,3 +812,30 @@ def test_get_info(connect: Callable[[], SocketPeer], wants_strings: bool) -> Non
     assert info.streaming_to_peer is True
     assert info.request_headers is None
     assert info.host == peer.tcp.getHost()
+
+
+@pytest.mark.parametrize(
+    ("method", "frame"),
+    [
+        ("strings_received", StringFrame("string0")),
+        ("sack_received", SackFrame(SACK(-1))),
+        ("reset_from_peer", ResetFrame("bye", True)),
+    ],
+)
+def test_detaches_even_if_the_stream_raises(
+    attached: SocketPeer, tracker: DummyStreamTracker, method: str, frame: Any
+) -> None:
+    """
+    If a call into the stream raises (a bug), Twisted drops the connection,
+    and the transport still goes offline.
+    """
+    stream = stream_of(tracker)
+
+    def broken(*args: object) -> None:
+        raise ZeroDivisionError
+
+    setattr(stream, method, broken)
+    with pytest.raises(ZeroDivisionError):
+        attached.send(frame)
+    attached.transport.connectionLost(Failure(ZeroDivisionError()))
+    assert stream.get_new()[-1] == ["transport_offline", attached.transport]
