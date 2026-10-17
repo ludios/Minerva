@@ -1,14 +1,17 @@
 Minerva
 =======
 
-Minerva is a robust Comet server and client.  You can use it to
-build web applications that need a socket-like abstraction.  Its server is built
-on top of Twisted.  The JavaScript client uses Closure Library.
+Minerva is a robust Comet server and client.  You can use it to build web
+applications that need a socket-like abstraction.  Its server is built on top
+of Twisted.  The JavaScript client uses Closure Library.
 
 Some uses for Minerva: chat applications, games, real-time collaboration,
 dashboards, monitoring systems.
 
 Read more: https://ludios.org/minerva/
+
+> Minerva dates from 2010-2012.  The server was ported to Python 3.15 in 2026
+> (see [CHANGES.md](CHANGES.md)); the JavaScript client is unchanged.
 
 
 ## Highlights
@@ -34,86 +37,136 @@ Read more: https://ludios.org/minerva/
 	dozen tabs.  If you want to use this on your HTTPS site, a wildcard cert is required.
 
 
+## Setup
 
-## Intial setup
-
-More documentation on how to build an application using Minerva is
-coming soon.  For now, here are some instructions on how to get
-Minerva's test server running:
-
-You'll need to install:
-
-*	Twisted: http://twistedmatrix.com/ (>= 8.2.0, but recent versions are
-	highly recommended for security and other bug fixes)
-
-*	zope.interface: http://pypi.python.org/pypi/zope.interface (Twisted needs it too)
-
-*	Webmagic: https://github.com/ludios/Webmagic
-
-*	Coreweb: https://github.com/ludios/Coreweb
-
-*	Securetypes: https://github.com/ludios/Securetypes
-
-*	Strfrag: https://github.com/ludios/Strfrag
-
-*	jinja2: http://pypi.python.org/pypi/Jinja2
-
-*	simplejson: http://pypi.python.org/pypi/simplejson
-
-*	Closure Library: http://code.google.com/intl/en/closure/library/
-
-
-Optional modules:
-
-*	Pyquitter: https://github.com/ludios/Pyquitter
-
-*	Refbinder: https://github.com/ludios/Refbinder
-
-*	Brequire: https://github.com/ludios/Brequire
-
-
-To start the server, run:
+You need Python 3.15 and [uv](https://docs.astral.sh/uv/):
 
 ```
-twistd -n minerva_site -t tcp:8111:interface=127.0.0.1 --closure-library=/abspath/closure-library
+uv sync
 ```
 
-or on Windows:
+<details>
+<summary>On NixOS</summary>
+
+uv's downloaded Pythons and the `ruff`/`ty` wheels need a glibc dynamic linker
+in the usual place, which NixOS (without nix-ld) doesn't have.  Use Nix's
+Python, and patch the two binaries after syncing:
 
 ```
-set PYTHONPATH=C:\Minerva's_parent_directory (if not already in PYTHONPATH)
-C:\Python27\python.exe C:\Python27\Scripts\twistd.py -n minerva_site -t tcp:8111:interface=127.0.0.1 --closure-library=C:\abspath\closure-library
+uv sync --python "$(nix build --no-link --print-out-paths nixpkgs#python315)/bin/python3.15"
+scripts/nixos-fix-venv.sh
+```
+</details>
+
+
+## Using Minerva in your application
+
+Implement a string protocol and a factory for it, and put a `WebPort` into
+your site:
+
+```python
+from twisted.internet import task
+from twisted.internet.defer import Deferred
+from twisted.internet.endpoints import serverFromString
+from twisted.web.resource import Resource
+from twisted.web.server import Site
+
+from minerva import ServerStream, StreamTracker, WebPort
+from minerva.web import put_child
+
+
+class EchoProtocol:
+    def stream_started(self, stream: ServerStream) -> None:
+        self.stream = stream
+
+    def stream_reset(self, reason_string: str, application_level: bool) -> None:
+        print("Stream reset:", reason_string)
+
+    def string_received(self, s: str) -> None:
+        self.stream.send_string(s)
+
+
+class EchoFactory:
+    def build_protocol(self) -> EchoProtocol:
+        return EchoProtocol()
+
+
+async def main(reactor) -> None:
+    root = Resource()
+    put_child(root, b"_minerva", WebPort(reactor, StreamTracker(reactor, EchoFactory())))
+    await serverFromString(reactor, "tcp:8080").listen(Site(root))
+    await Deferred()
+
+
+task.react(main)
 ```
 
-Note that if `closure-library` is in the parent of the source directory,
-you can omit `--closure-library=`.
+Minerva strings may contain only the characters `" "` to `"~"`; encode
+anything else, for example as JSON.  For question/answer/notification-style
+messages, see `minerva.QANProtocol` and `minerva.QANProtocolWrapper`.
 
-Then, navigate to `http://127.0.0.1:8111/` in your browser.  Follow the
-`/chatapp/?mode=http` link for a simple demo.  Note that it's noisy; watch for
-messages from **chatapp.logger**.  You can load it in multiple browsers and
-chat amongst each other.
+The tutorials in [src/minerva/tutorial/](src/minerva/tutorial/) are small,
+complete examples, each with a page that uses the standalone JavaScript
+client.  Run one and open http://127.0.0.1:10001/:
+
+```
+uv run python -m minerva.tutorial.standalone_1_rstring
+```
+
+To also accept Flash socket connections, listen on TCP with a
+`ServerTransportFactory` (it serves the Flash socket policy file too).
 
 
+## The development server
 
-## Running the tests
+`minerva-site` serves the JavaScript tests, the chat demo, and some testing
+tools:
 
-Server tests: `trial minerva`
+```
+uv run minerva-site --http tcp:8111:interface=127.0.0.1 --minerva tcp:8112:interface=127.0.0.1
+```
 
-Cient tests: Start the test server as described in "Initial setup", then browse to http://127.0.0.1:8111/js_minerva_tests.html
+Then browse to http://127.0.0.1:8111/.  Follow the `chatapp/?mode=http` link
+for a simple demo; you can load it in multiple browsers and chat amongst
+each other.
 
+Pages that use the uncompiled JavaScript need
+[Closure Library](https://github.com/google/closure-library) and
+[Coreweb](https://github.com/ludios/Coreweb)'s JavaScript; by default they are
+expected next to this repository (`../closure-library`, `../Coreweb`), or pass
+`--closure-library` and `--coreweb`.  Pass `--domain` to let browsers use
+random subdomains.  See `uv run minerva-site --help`.
+
+
+## Development
+
+```
+uv run pytest                    # server tests (and browser tests, if Chrome is installed)
+uv run pytest -m 'not browser'   # skip the headless-Chrome end-to-end tests
+uv run ruff format && uv run ruff check
+uv run ty check
+```
+
+Client tests: start the development server, then browse to
+http://127.0.0.1:8111/js_minerva_tests.html
+
+Naming convention: everything Minerva owns is snake_case; methods that
+implement a *Twisted* interface (`dataReceived`, `pauseProducing`,
+`registerProducer`, ...) keep Twisted's camelCase names, since Twisted calls
+them.  The allowed names are listed in `pyproject.toml`.
 
 
 ## Recompiling the compiled .js and .swf files
 
-If you want to recompile the compiled-JavaScript and .swf files, you also need:
-
-*	Closure Compiler: http://code.google.com/p/closure-compiler/
-
-*	haXe: http://haxe.org/
-
+The compiled files in `src/minerva/compiled_client/` are checked in.  To
+rebuild them, you need an old Closure Library and Closure Compiler (the
+JavaScript uses APIs that have since been removed), Python 2 for Closure
+Library's build tools, and [Haxe](https://haxe.org/) for the Flash connector.
 Then run:
 
 ```
-./build_compiled_js.sh
-./build_swfs.sh
+scripts/build_js.py
+scripts/build_swfs.sh && scripts/build_autocachebreakers.py
 ```
+
+See `scripts/build_js.py` for the environment variables it reads.
