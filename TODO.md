@@ -171,13 +171,17 @@
       dumbtest pages; test resources (SimpleResponse, UnicodeRainbow,
       NoOriginHeader, GetEndpointInfo, DisplayConnections, wait_resource).
 - [x] 6. Tutorials (`minerva/tutorial/standalone_*.py`) -> runnable py3 scripts.
-- [x] 7. Build scripts: (scripts/build_js.py is ported but NOT yet run: needs
-      old closure-library + compiler; CLOSURE_PYTHON=python2 for their tools)
-- [x] 7a. `build_autocachebreakers.py` (port), JS build scripts
-      (depend on Coreweb `_closurebuild`; port or replace), docs scripts.
-- [ ] 8. Smoke test real server: run `minerva-site`, curl HTTP transport with a
-      hand-written hello frame; TCP int32 + policy file via a tiny Python client.
-      Maybe headless browser if available.
+- [x] 7. Build scripts -> `scripts/`: build_autocachebreakers.py (ran it: same
+      digest), build_js.py (ported but NOT yet run: needs old closure-library +
+      compiler; CLOSURE_PYTHON=python2 for their tools), build_docs.sh, build_swfs.sh.
+- [x] 8. Smoke test real server: minerva-site via curl (HTTP long-poll) and raw
+      sockets (policy file, int32); tutorial 6 async QAN via curl.
+      Automated: tests/test_browser.py drives the *compiled 2012 JS client* in
+      headless Chrome (strings + async QAN over long-polling), ~7s; skipped
+      without Chrome.  NOTE: `--dump-dom` fires at the load event, so the
+      pages delay it with an <img> from WaitResource.  The standalone client
+      can only long-poll; streaming/Flash/subdomains need the uncompiled
+      client (closure-library; phase 11).
 - [ ] 9. README, CHANGES (behavior changes), .editorconfig, CI workflow.
 - [ ] 10. Review pass: `/code-review`-style self review; consult Fable/Astra;
       grep `XXX(port)`.
