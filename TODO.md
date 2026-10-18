@@ -109,6 +109,34 @@
 - Grep for silent `str(bytes)` -> `"b'...'"` after porting.
 - Policy string: `str`, encoded once.
 
+## Future work: the JavaScript client -> TypeScript (a suggested path)
+
+The client is ~11k lines of Closure-style JS (goog.provide/require, JSDoc
+types for Closure Compiler, `cw.Class`-style test classes), on a 2012 Closure
+Library.  Suggested order, mirroring how the Python port went:
+
+1. Keep the safety net: tests/test_js.py runs the existing JS suite against
+   the Python server in headless Chrome, and tests/test_browser.py drives the
+   compiled client.  Port each module's tests along with it (to e.g. vitest),
+   and add a TS-client variant of the browser tests.
+2. Leaf modules first, as ES modules: frames, decoders, window, qan (the
+   user's untracked qan.ts already does this, inlining a small Deferred).
+   Their JSDoc types translate almost mechanically; Google's old `gents` tool
+   (in the clutz repo) automated Closure->TS, but hand-porting is probably
+   less trouble at this size.
+3. Replace Closure Library pieces with the platform: goog.async.Deferred ->
+   Promises (but keep cancellation, which QAN uses: AbortSignal), goog.events
+   -> EventTarget, goog.net.XhrIo + the readyState-3 XHR streaming hacks
+   (xhrlike/xhdr/xhrmaster/xhrslave) -> fetch() with a ReadableStream body.
+4. Transports: HTTP long-poll/streaming map well to fetch().  The Flash
+   socket transport can't run in any current browser; the natural successor
+   is a WebSocket transport (server: a small Twisted/autobahn or
+   `websockets` endpoint speaking the same frames).  The cross-subdomain
+   xdrframe machinery (document.domain) is also dead in modern browsers
+   (document.domain setting is deprecated); HTTP/2 makes the per-host
+   connection limit it worked around mostly moot.
+5. Then client.js (ClientStream/ClientTransport, ~2.6k lines) last.
+
 ## Hardening ideas (pre-existing in 2012 code; from Astra's review; not done)
 
 - HTTP request bodies have no total size limit (Twisted spools them; we
@@ -197,7 +225,7 @@
 - [x] 9. README, CHANGES (behavior changes), .editorconfig, CI workflow.
 - [ ] 10. Review pass: `/code-review`-style self review; consult Fable/Astra;
       grep `XXX(port)`.
-- [~] 11. (stretch) closure-library for dev mode/JS tests; note TS plan.
+- [x] 11. (stretch) closure-library for dev mode/JS tests; TS plan (above).
       DONE: downloaded closure-library r2192 (commit 7f2b29f, Sep 2012 — what
       the compiled client was built with) into ../closure-library.  The JS
       unit-test suite (190 tests, 23 browser-specific skips) passes in headless
@@ -209,4 +237,4 @@
       downloads/v2/code.google.com/closure-compiler/) and CLOSURE_PYTHON=python2,
       deps.js regenerates identically and the client compiles with 0 errors /
       0 warnings / 97.5% typed (same as 2012); the new build passes the browser
-      tests.  Kept the checked-in r2226 artifacts.  TODO: TS plan note.
+      tests.  Kept the checked-in r2226 artifacts.
