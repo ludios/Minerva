@@ -162,6 +162,16 @@ The compiled files in `src/minerva/compiled_client/` are checked in.  To
 rebuild them, you need an old Closure Library and Closure Compiler (the
 JavaScript uses APIs that have since been removed), Python 2 for Closure
 Library's build tools, and [Haxe](https://haxe.org/) for the Flash connector.
+These work:
+
+- Closure Library r2192 (September 2012), commit
+  [`7f2b29f`](https://github.com/google/closure-library/tree/7f2b29fea671702822e5667faaa80249856a1fc3),
+  in `../closure-library`.  The development server and the JavaScript tests
+  need this too.
+- Closure Compiler 20120917, from
+  [`compiler-20120917.zip`](https://storage.googleapis.com/google-code-archive-downloads/v2/code.google.com/closure-compiler/compiler-20120917.zip),
+  with its `compiler.jar` in `../closure-compiler/build/`.
+
 Then run:
 
 ```

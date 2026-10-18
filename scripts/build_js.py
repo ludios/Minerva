@@ -7,7 +7,8 @@ This needs an old Closure Library and Closure Compiler (the JavaScript uses
 APIs that were removed long ago), and a Coreweb checkout:
 
     CLOSURE_LIBRARY_HOME   default: ../closure-library
-    CLOSURE_COMPILER_HOME  default: ../closure-compiler (build/compiler.jar in it)
+    CLOSURE_COMPILER_HOME  default: ../closure-compiler (with the compiler's jar,
+                           and any jars it depends on, in build/)
     COREWEB_HOME           default: ../Coreweb
     CLOSURE_PYTHON         the Python for Closure Library's (Python 2-era)
                            closurebuilder.py and depswriter.py; default: python2
@@ -55,17 +56,14 @@ def run(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def git_rev(directory: str) -> str:
-    return run(
-        [
-            "git",
-            "-C",
-            directory,
-            "log",
-            "--max-count=1",
-            "--date=short",
-            "--pretty=%H | %ad | %s",
-        ]
-    ).stdout.strip()
+    result = subprocess.run(
+        ["git", "-C", directory, "log", "-1", "--date=short", "--pretty=%H | %ad | %s"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return f"(not a git checkout: {directory})"
+    return result.stdout.strip()
 
 
 def build_deps() -> None:

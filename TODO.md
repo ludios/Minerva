@@ -191,5 +191,10 @@
       unit-test suite (190 tests, 23 browser-specific skips) passes in headless
       Chrome via tests/test_js.py (tests/chrome.py = tiny CDP client).  This
       found the missing `X-Content-Type-Options: nosniff` regression that broke
-      HTTP streaming.  TODO: TS plan note; maybe try scripts/build_js.py
-      (needs old closure-compiler jar).
+      HTTP streaming.  scripts/build_js.py also verified: with
+      ../closure-compiler/build/compiler.jar from compiler-20120917.zip (r2180,
+      via the Google Code archive: storage.googleapis.com/google-code-archive-
+      downloads/v2/code.google.com/closure-compiler/) and CLOSURE_PYTHON=python2,
+      deps.js regenerates identically and the client compiles with 0 errors /
+      0 warnings / 97.5% typed (same as 2012); the new build passes the browser
+      tests.  Kept the checked-in r2226 artifacts.  TODO: TS plan note.
