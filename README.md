@@ -149,7 +149,10 @@ uv run ruff format && uv run ruff check
 uv run ty check
 ```
 
-Client tests: start the development server, then browse to
+The browser tests drive the JavaScript client in headless Chrome.  They
+include the client's own test suite (`js_minerva_tests.html`), if Closure
+Library and Coreweb are next to the repository (see below).  You can also run
+that suite yourself: start the development server, then browse to
 http://127.0.0.1:8111/js_minerva_tests.html
 
 Naming convention: everything Minerva owns is snake_case; methods that

@@ -223,8 +223,12 @@ Library.  Suggested order, mirroring how the Python port went:
       can only long-poll; streaming/Flash/subdomains need the uncompiled
       client (closure-library; phase 11).
 - [x] 9. README, CHANGES (behavior changes), .editorconfig, CI workflow.
-- [ ] 10. Review pass: `/code-review`-style self review; consult Fable/Astra;
-      grep `XXX(port)`.
+- [x] 10. Review pass: self review (exception-safe stream calls); Astra and
+      Fable reviewed the finished port against master (prompt was in
+      /tmp/minerva-consult/review_prompt.md).  Fixed all their real bugs (most
+      pre-existing in 2012), each with a test that fails without the fix;
+      deferred DoS-hardening items are listed above.  No `XXX(port)` markers
+      were needed.
 - [x] 11. (stretch) closure-library for dev mode/JS tests; TS plan (above).
       DONE: downloaded closure-library r2192 (commit 7f2b29f, Sep 2012 — what
       the compiled client was built with) into ../closure-library.  The JS
