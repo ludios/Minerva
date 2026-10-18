@@ -19,6 +19,7 @@ from twisted.web.static import File
 from minerva.decoders import DelimitedStringDecoder
 from minerva.frames import (
     Frame,
+    KillReason,
     ResetFrame,
     SackFrame,
     SeqNumFrame,
@@ -26,6 +27,7 @@ from minerva.frames import (
     StreamCreatedFrame,
     StreamStatusFrame,
     StringFrame,
+    TransportKillFrame,
     decode_frame_from_server,
 )
 from minerva.stream import ServerStream, StreamTracker
@@ -483,3 +485,54 @@ def test_get_info(resource: HttpIo, tracker: StreamTracker, streaming: bool) -> 
     assert info.streaming_to_peer is streaming
     assert info.request_headers is request.requestHeaders
     assert info.host == request.getHost()
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (b"", KillReason.FRAME_CORRUPTION),
+        (make_http_hello().encode(), KillReason.FRAME_CORRUPTION),  # unterminated
+        (b"{" * 100, KillReason.FRAME_CORRUPTION),
+        # An empty frame, which is invalid
+        (b"\n", KillReason.INVALID_FRAME_TYPE_OR_ARGUMENTS),
+    ],
+    ids=["empty", "unterminated hello", "garbage", "empty frame"],
+)
+def test_body_without_complete_hello_is_answered(
+    mock_resource: HttpIo, body: bytes, reason: KillReason
+) -> None:
+    """
+    A request body is complete, so if it has no complete hello frame, the
+    request is answered right away rather than left hanging.
+    """
+    request = FakeRequest(body)
+    mock_resource.render(request)
+    assert request.finished == 1
+    assert response_frames(request)[-1] == TransportKillFrame(reason)
+
+
+def test_upload_only_request_counts_as_activity(
+    clock: Clock, resource: HttpIo, tracker: StreamTracker
+) -> None:
+    create_stream(resource, streaming=False)
+    clock.advance(100)
+    post(resource, make_http_hello(request_new_stream=False), StringFrame("still here"))
+    assert tracker.get_stream(STREAM_ID).last_received == clock.seconds()
+
+
+def test_request_finished_even_if_detaching_raises(
+    mock_resource: HttpIo, mock_tracker: DummyStreamTracker
+) -> None:
+    request = post(
+        mock_resource, make_http_hello(wants_strings=True, streaming_response=True)
+    )
+    stream: MockServerStream = mock_tracker.get_stream(STREAM_ID)
+    [transport] = stream.all_seen_transports
+
+    def broken(transport: object) -> None:
+        raise ZeroDivisionError
+
+    stream.transport_offline = broken  # ty: ignore[invalid-assignment]
+    with pytest.raises(ZeroDivisionError):
+        transport.close_gently()
+    assert request.finished == 1

@@ -832,3 +832,33 @@ def test_calls_after_reset_are_ignored(
     stream.transport_online(t2, True, None)
     assert factory.instance.get_new() == []
     assert t1.get_new() == t2.get_new() == []
+
+
+@pytest.mark.parametrize("bad", [b"bye", None, 3])
+def test_reset_rejects_non_str(
+    stream: ServerStream, t1: DummySocketLikeTransport, bad: object
+) -> None:
+    stream.transport_online(t1, False, None)
+    with pytest.raises(TypeError):
+        stream.reset(bad)  # ty: ignore[invalid-argument-type]
+
+
+def test_build_protocol_raises(
+    clock: Clock, t1: DummySocketLikeTransport, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    If the factory can't build a protocol, the stream is reset, and the
+    transport is told to close (so it won't linger).
+    """
+
+    class BrokenFactory(MockStringFactory):
+        def build_protocol(self) -> MockStringProtocol:
+            raise ZeroDivisionError
+
+    stream = ServerStream(clock, "some fake id", BrokenFactory())
+    stream.transport_online(t1, True, None)
+    assert stream.disconnected
+    assert t1.get_new() == [
+        ["write_reset", "stream_started raised uncaught exception", False]
+    ]
+    assert len(logged_exceptions(caplog, ZeroDivisionError)) == 1

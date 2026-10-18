@@ -109,6 +109,18 @@
 - Grep for silent `str(bytes)` -> `"b'...'"` after porting.
 - Policy string: `str`, encoded once.
 
+## Hardening ideas (pre-existing in 2012 code; from Astra's review; not done)
+
+- HTTP request bodies have no total size limit (Twisted spools them; we
+  `read()` it all).  Needs a custom channel/Content-Length check.
+- No global limit on concurrent streams / stream-creation rate.
+- TCP connections are never force-closed after policy file / YouCloseIt, and
+  there's no handshake timeout in UNKNOWN mode (existing TODOs in transport.py).
+- QAN: unlimited concurrent peer questions; reset doesn't cancel them.
+- ServerStream producer registration: a pull producer that unregisters itself
+  inside Twisted's synchronous resumeProducing leaves a stale
+  `_primary_has_producer` flag.
+
 ## Behavior changes (document in README/CHANGES)
 
 - `objcheck`: `ensure_int("0")` raises `TypeError` (was `ValueError`).

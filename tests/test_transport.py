@@ -20,6 +20,7 @@ from zope.interface.verify import verifyObject
 
 from minerva.decoders import Int32StringDecoder
 from minerva.frames import (
+    MAX_SAFE_INT,
     CommentFrame,
     KillReason,
     ResetFrame,
@@ -839,3 +840,21 @@ def test_detaches_even_if_the_stream_raises(
         attached.send(frame)
     attached.transport.connectionLost(Failure(ZeroDivisionError()))
     assert stream.get_new()[-1] == ["transport_offline", attached.transport]
+
+
+def test_peer_seq_num_cannot_exceed_max_safe_int(
+    attached: SocketPeer, tracker: DummyStreamTracker
+) -> None:
+    attached.send(
+        SeqNumFrame(MAX_SAFE_INT), StringFrame("last"), StringFrame("too far")
+    )
+    frames = attached.get_new()
+    assert frames[-2:] == [
+        TransportKillFrame(KillReason.INVALID_FRAME_TYPE_OR_ARGUMENTS),
+        YouCloseItFrame(),
+    ]
+    assert [
+        "strings_received",
+        attached.transport,
+        [(MAX_SAFE_INT, "last")],
+    ] in stream_of(tracker).log

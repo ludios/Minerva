@@ -141,6 +141,8 @@ class ServerStream:
         will soon get a `stream_attach_failure` when it tries to attach to the
         nonexistent stream.
         """
+        if not isinstance(reason_string, str):
+            raise TypeError(f"reason_string must be a str, was {reason_string!r}")
         if not is_restricted_string(reason_string) or len(reason_string) > 255:
             raise ValueError(f"bad reason_string {reason_string!r}")
         if self.disconnected:
@@ -294,12 +296,12 @@ class ServerStream:
         # should be able to upload strings without ever having a primary
         # transport.
         if self._protocol is None:
-            self._protocol = self._protocol_factory.build_protocol()
             try:
+                self._protocol = self._protocol_factory.build_protocol()
                 # This can do anything to us, including reset or send_string.
                 self._protocol.stream_started(self)
             except Exception:
-                logger.exception("stream_started raised an uncaught exception")
+                logger.exception("Couldn't build or start the protocol")
                 self._reset(
                     "stream_started raised uncaught exception", application_level=False
                 )

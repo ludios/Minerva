@@ -166,7 +166,7 @@ class Incoming:
                     deliverable.append(cached_item)
                     self._size -= cached_size
                     self._last_ack += 1
-            elif seq_num > self._last_ack:
+            elif seq_num > self._last_ack and seq_num not in self._cached:
                 if item_limit is not None and len(self._cached) >= item_limit:
                     return deliverable, True
                 size = total_size_of(item)
@@ -174,7 +174,7 @@ class Incoming:
                     return deliverable, True
                 self._cached[seq_num] = (item, size)
                 self._size += size
-            # else: already delivered; ignore it.
+            # else: already delivered or cached (a retransmission); ignore it.
 
         # Possibly reduce memory use by dropping the old (resized) dict.
         if not self._cached:

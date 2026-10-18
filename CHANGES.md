@@ -73,6 +73,17 @@ the new server in headless Chrome.
 - QAN: `fail_all()` no longer crashes on questions that were already
   cancelled.  A question answered with something other than a `str` gets an
   error-answer, rather than no answer at all.
+- A retransmitted string that was already waiting in the receive window (for
+  an earlier gap to fill) was counted again, inflating the window's size and
+  possibly killing the transport for a false overflow.  It's now ignored.
+- An HTTP request whose body has no complete hello frame is answered right
+  away (with a transport kill frame), instead of hanging until the client
+  gives up.
+- If the protocol factory raises, the stream is reset, instead of keeping
+  the transport attached forever.
+- Uploads over HTTP transports that don't receive strings now count as
+  activity, so the stream isn't reset as idle.
+- A client can't push sequence numbers past 2**53.
 - `notify_finish()` on a finished stream returns an already-fired Deferred.
 - The `xdrframe` page responds with 400 Bad Request for a bad `id` or
   `domain`, rather than an internal server error.

@@ -268,6 +268,22 @@ class TestIncoming:
         assert i.get_undeliverable_count() == 0
         assert i.get_max_consumption() == 0
 
+    def test_retransmitted_items_counted_once(self) -> None:
+        """
+        A retransmission of an item that is already waiting doesn't take up
+        more space, or count towards the item limit.
+        """
+        i = Incoming()
+        for _ in range(3):
+            assert i.give([(2, "string2")], item_limit=1) == ([], False)
+        assert i.get_undeliverable_count() == 1
+        assert i.get_max_consumption() == total_size_of("string2")
+        assert i.give([(0, "string0"), (1, "string1")]) == (
+            ["string0", "string1", "string2"],
+            False,
+        )
+        assert i.get_max_consumption() == 0
+
     def test_max_consumption(self) -> None:
         i = Incoming()
         assert i.get_max_consumption() == 0
@@ -331,3 +347,6 @@ def test_queue_and_incoming_over_a_lossy_channel(
         assert sender.handle_sack(receiver.get_sack()) is False
 
     assert delivered == strings
+    assert receiver.get_undeliverable_count() == 0
+    assert receiver.get_max_consumption() == 0
+    assert sender.get_max_consumption() == 0

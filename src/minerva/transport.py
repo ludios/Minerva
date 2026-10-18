@@ -278,15 +278,17 @@ class ServerTransport(TwistedProtocol):
             self._cancel_timers()
             # Tell the stream that this transport is offline.  (Whether we
             # still have a TCP connection to the peer is irrelevant.)
-            if self._stream is not None:
-                self._stream.transport_offline(self)
-                self._stream = None
-            if (
-                self._request is not None
-                and not self._request_aborted
-                and not self._request.finished
-            ):
-                self._request.finish()
+            stream, self._stream = self._stream, None
+            try:
+                if stream is not None:
+                    stream.transport_offline(self)
+            finally:
+                if (
+                    self._request is not None
+                    and not self._request_aborted
+                    and not self._request.finished
+                ):
+                    self._request.finish()
             # TODO: for TCP, close the connection ourselves in 5-10 seconds.
 
     def _cancel_timers(self) -> None:
@@ -494,6 +496,9 @@ class ServerTransport(TwistedProtocol):
                 stream = self._stream_tracker.get_stream(hello.stream_id)
         else:
             stream = self._stream_tracker.get_stream(hello.stream_id)
+        # Do this now: an upload-only HTTP transport detaches before
+        # `dataReceived` would update it.
+        stream.last_received = self._clock.seconds()
 
         self._write_initial_frames(stream, hello.request_new_stream)
         # Do this before `transport_online`: if the SACK is bad, the stream
@@ -588,7 +593,10 @@ class ServerTransport(TwistedProtocol):
                 case StringFrame(string):
                     # In the future, we could support switching to strings
                     # with a wider character range mid-stream.
-                    if not is_restricted_string(string):
+                    if (
+                        not is_restricted_string(string)
+                        or self._peer_seq_num >= MAX_SAFE_INT
+                    ):
                         kill(KillReason.INVALID_FRAME_TYPE_OR_ARGUMENTS)
                         break
                     self._peer_seq_num += 1
@@ -736,6 +744,10 @@ class ServerTransport(TwistedProtocol):
         headers.setRawHeaders("x-content-type-options", ["nosniff"])
 
         self.dataReceived(body)
+        # The body is complete, so if it had no (complete) hello frame, it
+        # never will, and we must not leave the request hanging.
+        if not self._terminating and self._received_counter == -1:
+            self._close(KillReason.FRAME_CORRUPTION)
 
     def request_aborted(self, reason: Failure) -> None:
         """
