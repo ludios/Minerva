@@ -42,6 +42,24 @@ TestRunnerPage.modules = [
 
 <script>
 window.onload = TestRunnerPage.startTests;
+
+// For browsers that tests/test_js.py can't remote-control: with ?report=URL,
+// POST the results there when the tests finish.
+(function() {
+	var report = /[?&]report=([^&]*)/.exec(location.search);
+	if(!report) {
+		return;
+	}
+	var timer = setInterval(function() {
+		var results = document.getElementById('TestRunnerPage-results').innerText;
+		if(results.indexOf('|*END-SUMMARY*|') != -1) {
+			clearInterval(timer);
+			var xhr = new XMLHttpRequest();
+			xhr.open('POST', decodeURIComponent(report[1]));
+			xhr.send(results);
+		}
+	}, 250);
+})();
 </script>
 
 <br>

@@ -143,8 +143,8 @@ random subdomains.  See `uv run minerva-site --help`.
 ## Development
 
 ```
-uv run pytest                    # server tests (and browser tests, if Chrome is installed)
-uv run pytest -m 'not browser'   # skip the headless-Chrome end-to-end tests
+uv run pytest                    # server tests (and browser tests, if the browsers are installed)
+uv run pytest -m 'not browser'   # skip the end-to-end browser tests
 uv run ruff format && uv run ruff check
 uv run ty check
 ```
@@ -154,6 +154,22 @@ include the client's own test suite (`js_minerva_tests.html`), if Closure
 Library and Coreweb are next to the repository (see below).  You can also run
 that suite yourself: start the development server, then browse to
 http://127.0.0.1:8111/js_minerva_tests.html
+
+To test the Flash socket transport, the browser tests also need a browser
+that still runs Adobe Flash Player: [Pale Moon](https://www.palemoon.org/),
+which kept NPAPI plugin support, with Flash Player 32.0.0.371 (the last
+release without Adobe's 2021 kill switch), on a virtual X display (Xvfb).
+With [Nix](https://nixos.org/), build all that into `../flash-browser` with:
+
+```
+nix-build scripts/flash-browser.nix -o ../flash-browser
+```
+
+Otherwise, point `MINERVA_FLASH_BROWSER` at another NPAPI browser executable
+(Pale Moon, Basilisk, or Firefox <= 84) that can find a Flash plugin, e.g.
+through `MOZ_PLUGIN_PATH`, and install Xvfb.  This runs the compiled client
+with the real `FlashConnector.swf` (`tests/test_flash.py`), and the client's
+test suite with Flash, which adds its `RealFlashSocketTests`.
 
 Naming convention: everything Minerva owns is snake_case; methods that
 implement a *Twisted* interface (`dataReceived`, `pauseProducing`,

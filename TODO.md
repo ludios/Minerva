@@ -137,6 +137,15 @@ Library.  Suggested order, mirroring how the Python port went:
    connection limit it worked around mostly moot.
 5. Then client.js (ClientStream/ClientTransport, ~2.6k lines) last.
 
+## Known client bugs (pre-existing in 2012 code; not fixed)
+
+- `ClientStream.earlyFailure_` (e.g. Flash Player missing or blocked, or the
+  XDR iframes failing) disposes the stream without calling the protocol's
+  `streamReset`, so the application never hears that the stream died; a
+  `sendString` right after `start()` then throws "Can't send in state
+  5_DISCONNECTED".  tests/test_flash.py works around it (stops at "ERROR"
+  lines, else times out).
+
 ## Hardening ideas (pre-existing in 2012 code; from Astra's review; not done)
 
 - HTTP request bodies have no total size limit (Twisted spools them; we
@@ -242,3 +251,23 @@ Library.  Suggested order, mirroring how the Python port went:
       deps.js regenerates identically and the client compiles with 0 errors /
       0 warnings / 97.5% typed (same as 2012); the new build passes the browser
       tests.  Kept the checked-in r2226 artifacts.
+- [x] 12. Flash end-to-end tests.  scripts/flash-browser.nix builds Pale Moon
+      35.0.1 (GTK2 build; Pale Moon keeps NPAPI) + Adobe Flash Player
+      32.0.0.371 NPAPI (last release before the 2021-01-12 kill switch, so no
+      binary patching needed) + Xvfb into ../flash-browser.  Pale Moon was
+      dropped from nixpkgs-unstable (2026-09-21, GTK2), so it pins nixos-26.05
+      for GTK2 and repacks the official tarball (sha256 matches palemoon.org's
+      hashes.txt; .sig verified with trava90's key 0xC65285EC).  The Flash
+      tarball is from the Wayback Machine, matching the sha256 that nixpkgs
+      pinned in 2020 (commit d8fa222).  Flashpoint Archive's browser is
+      Flashpoint Navigator, a Basilisk fork (same UXP platform as Pale Moon),
+      but it has no Linux release binaries.  Pale Moon can't be
+      remote-controlled, so pages POST their logs: browser_server.py's
+      /log/ID, and js_minerva_tests.html?report=URL.  Profile prefs needed:
+      plugin.state.flash=2 (else click-to-play) and
+      browser.shell.checkDefaultBrowser=false (else a modal dialog).
+      tests/test_flash.py: strings + async QAN over the Flash socket (~3s);
+      test_js.py runs the JS suite in Pale Moon too: 190 tests, 20 skips
+      (Chrome: 23), i.e. RealFlashSocketTests now run and pass.  Verified the
+      tests fail without the plugin and with a policy file that doesn't allow
+      the port.

@@ -4,7 +4,8 @@
 
 The server was ported from Python 2 to Python 3.15.  The wire protocol and
 the JavaScript client are unchanged: the compiled 2012 client is tested against
-the new server in headless Chrome.
+the new server in headless Chrome, and its Flash socket transport in Pale Moon
+with Adobe Flash Player (see the README).
 
 ### Project
 
@@ -31,6 +32,8 @@ the new server in headless Chrome.
   use a tool like `watchfiles` instead.
 - The tutorials run with `python -m minerva.tutorial.standalone_N_...`.
 - Build scripts moved to `scripts/` and were ported to Python 3.
+- `js_minerva_tests.html?report=URL` POSTs the test results to `URL` when the
+  tests finish, for browsers that tests can't remote-control.
 
 ### API
 
