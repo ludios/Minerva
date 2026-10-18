@@ -93,7 +93,9 @@ class EchoFactory:
 
 async def main(reactor) -> None:
     root = Resource()
-    put_child(root, b"_minerva", WebPort(reactor, StreamTracker(reactor, EchoFactory())))
+    put_child(
+        root, b"_minerva", WebPort(reactor, StreamTracker(reactor, EchoFactory()))
+    )
     await serverFromString(reactor, "tcp:8080").listen(Site(root))
     await Deferred()
 

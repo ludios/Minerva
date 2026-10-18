@@ -23,7 +23,7 @@ from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import ServerTransportFactory
 from minerva.window import SACK
 from tests.helpers import make_hello
-from tests.mocks import MockStringFactory, SocketPeer
+from tests.mocks import MockProducer, MockStringFactory, SocketPeer
 
 STREAM_ID = "x" * 26
 
@@ -455,3 +455,27 @@ def test_reset_in_string_received(
         ["string_received", "string0"],
         ["stream_reset", "reset forced by mock protocol", True],
     ]
+
+
+def test_producer_survives_primary_switch(server: Server) -> None:
+    """
+    Through real transports: a push producer registered on the stream isn't
+    left paused when a new primary transport succeeds the old one.
+    """
+    t0 = server.connect(make_hello(wants_strings=True))
+    stream = server.stream
+    producer = MockProducer()
+    stream.registerProducer(producer, streaming=True)
+    assert t0.tcp.producer is t0.transport
+
+    t1 = server.connect(
+        make_hello(
+            transport_number=1,
+            request_new_stream=False,
+            wants_strings=True,
+            succeeds_transport=0,
+        )
+    )
+    assert producer.get_new() == []
+    assert t1.tcp.producer is t1.transport
+    assert t0.tcp.producer is None

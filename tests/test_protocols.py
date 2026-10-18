@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 import pytest
-from twisted.internet.defer import Deferred
+from twisted.internet.defer import CancelledError, Deferred
 from twisted.internet.task import Clock
 
 from minerva.protocols import QANProtocolWrapper, SubprotocolFactory
@@ -243,3 +243,44 @@ class TestQANProtocolWrapper:
         assert list(map(string_to_qan_frame, sent(stream))) == [
             KnownErrorAnswer("nope", 1)
         ]
+
+
+class TestQANReset:
+    def test_pending_answers_cancelled(
+        self, clock: Clock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """
+        When the stream resets, answers still being worked out are cancelled,
+        and nothing is logged as a bug.
+        """
+        cancelled: list[bool] = []
+        d: Deferred[str] = Deferred(lambda _: cancelled.append(True))
+        protocol = RecordingQANProtocol(answer=lambda body: d)
+        stream, transport = start_stream(clock, QANFactory(protocol))
+        stream.strings_received(transport, [(0, qan_frame_to_string(Question("?", 1)))])
+        stream.reset("bye")
+        assert cancelled == [True]
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    def test_async_answer_cancelled(
+        self, clock: Clock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cancelled: list[bool] = []
+
+        async def slow_answer(body: str) -> str:
+            d: Deferred[None] = Deferred()
+            clock.callLater(10, d.callback, None)
+            try:
+                await d
+            except CancelledError:
+                cancelled.append(True)
+                raise
+            return "too late"
+
+        protocol = RecordingQANProtocol(answer=slow_answer)
+        stream, transport = start_stream(clock, QANFactory(protocol))
+        stream.strings_received(transport, [(0, qan_frame_to_string(Question("?", 1)))])
+        stream.reset("bye")
+        clock.advance(10)
+        assert cancelled == [True]
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []

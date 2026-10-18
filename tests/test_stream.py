@@ -828,10 +828,22 @@ def test_calls_after_reset_are_ignored(
 
     stream.strings_received(t1, [(0, "late")])
     stream.reset_from_peer("late", True)
+    assert factory.instance.get_new() == []
+    assert t1.get_new() == []
+
+
+def test_transport_attaching_to_reset_stream_gets_reset(
+    stream: ServerStream, t1: DummySocketLikeTransport
+) -> None:
+    """
+    A transport that attaches after the stream reset (it was being set up
+    meanwhile) is told about the reset, rather than left attached and silent.
+    """
+    stream.transport_online(t1, True, None)
+    stream.reset("bye")
     t2 = DummySocketLikeTransport()
     stream.transport_online(t2, True, None)
-    assert factory.instance.get_new() == []
-    assert t1.get_new() == t2.get_new() == []
+    assert t2.get_new() == [["write_reset", "bye", True]]
 
 
 @pytest.mark.parametrize("bad", [b"bye", None, 3])
@@ -862,3 +874,60 @@ def test_build_protocol_raises(
         ["write_reset", "stream_started raised uncaught exception", False]
     ]
     assert len(logged_exceptions(caplog, ZeroDivisionError)) == 1
+
+
+class TestPrimarySwitchWithRealisticTransports:
+    """
+    These transports go offline as soon as they're closed, like the real ones.
+    """
+
+    @pytest.mark.parametrize("paused", [False, True])
+    def test_push_producer_not_left_paused(
+        self, stream: ServerStream, paused: bool
+    ) -> None:
+        t1 = DummySocketLikeTransport(stream=stream)
+        stream.transport_online(t1, True, None)
+        producer = MockProducer()
+        stream.registerProducer(producer, streaming=True)
+        if paused:
+            stream.pauseProducing()  # pretend that t1 called this
+            assert producer.get_new() == ["pauseProducing"]
+
+        t2 = DummySocketLikeTransport(stream=stream)
+        stream.transport_online(t2, True, None)
+        assert stream._primary_transport is t2
+        assert t1.get_new()[-1] == ["close_gently"]
+        # The producer ends up resumed (or was never paused).
+        assert producer.get_new() == (["resumeProducing"] if paused else [])
+
+    def test_reset_in_transport_destroyed(self, clock: Clock) -> None:
+        """
+        A protocol may reset the stream when the old primary transport goes
+        away during a switch.
+        """
+
+        class Resetter(_TransportListener):
+            def transport_destroyed(self, transport_info: TransportInfo) -> None:
+                assert self.stream is not None
+                self.stream.reset("old transport gone")
+
+        class Factory(MockStringFactory):
+            def build_protocol(self) -> Resetter:
+                return Resetter(self)
+
+        stream = ServerStream(clock, "some fake id", Factory())
+        t1 = DummySocketLikeTransport(stream=stream)
+        stream.transport_online(t1, True, None)
+        stream.send_string("pending")
+        t2 = DummySocketLikeTransport(stream=stream)
+        stream.transport_online(t2, True, None)
+        assert stream.disconnected
+        assert t2.get_new() == [["write_reset", "old transport gone", True]]
+
+
+def test_stream_tracker_stop(clock: Clock, factory: MockStringFactory) -> None:
+    tracker = StreamTracker(clock, factory)
+    assert clock.getDelayedCalls() != []
+    tracker.stop()
+    assert clock.getDelayedCalls() == []
+    tracker.stop()  # idempotent

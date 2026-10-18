@@ -60,9 +60,19 @@ the new server in headless Chrome.
   remaining strings are still delivered.  (Before, the rest of the batch was
   silently dropped, although it had been acknowledged.)  When a protocol
   resets its stream, it gets no more strings.
-- Strings that arrive in the same batch as (but before) an invalid frame are
-  now delivered and acknowledged before the transport is killed.  (Before,
-  this crashed.)
+- Strings that arrive in the same batch as (but before) an invalid frame or
+  a bad SACK are now delivered and acknowledged before the transport is
+  killed.  (Before, this crashed.)
+- After a primary-transport switch, a registered push producer is no longer
+  left paused forever.  A client aborting a streaming HTTP request while a
+  producer is registered no longer leaves the stream wedged.
+- A protocol may reset the stream from `transport_destroyed` during a
+  transport switch (before, this raised an `AssertionError`), and a transport
+  that attaches to a stream that died meanwhile gets a reset frame instead
+  of silence.
+- QAN: when the stream resets, the answers still being worked out for the
+  peer's questions are cancelled, and late answers are dropped quietly.
+- `StreamTracker.stop()` stops its periodic check for abandoned streams.
 - A bad QAN frame now resets the stream as intended.  (Before, it raised a
   `NameError`.)
 - Hello frames with huge numbers (like `1e999`), and reset frames without a

@@ -238,6 +238,8 @@ GET.
 """
 
     def render_POST(self, request: Request) -> bytes:
+        # Not HTML, so that it can't reflect a script.
+        request.setHeader(b"content-type", b"text/plain; charset=utf-8")
         assert request.content is not None
         request.content.seek(0)
         return f"POST with request.content: {request.content.read()!r}".encode()

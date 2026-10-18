@@ -327,6 +327,14 @@ class QANHelper:
         """
         self._send_qan_frame(Notification(body))
 
+    def cancel_peer_questions(self) -> None:
+        """
+        Cancel the Deferreds (or coroutines) answering the peer's questions,
+        for example because the stream is gone.
+        """
+        for d in list(self._their_questions.values()):
+            d.cancel()
+
     def fail_all(self, reason: str) -> None:
         """
         Errback all of our pending questions with `QuestionFailed(reason)`.

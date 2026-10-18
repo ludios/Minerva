@@ -225,6 +225,16 @@ class TestSite:
         assert b'__xdrframe_setupXDRFrame("f1");' in request.written_bytes()
 
 
+def test_form_sandbox_post_is_not_html() -> None:
+    from minerva.site import FormSandbox
+
+    request = FakeRequest(b"<script>alert(1)</script>")
+    FormSandbox().render(request)
+    assert request.responseHeaders.getRawHeaders(b"content-type") == [
+        b"text/plain; charset=utf-8"
+    ]
+
+
 class TestWaitResource:
     def test_get(self, clock: Clock) -> None:
         request = FakeRequest()

@@ -96,6 +96,11 @@ class QANProtocolWrapper:
 
     def _send_qan_frame(self, frame: QANFrame) -> None:
         assert self.stream is not None
+        if self.stream.disconnected:
+            # For example, an answer that was still being worked out when the
+            # stream reset.
+            logger.debug("Not sending %r over disconnected %r", frame, self.stream)
+            return
         self.stream.send_string(
             qan_frame_to_string(frame), validate=self._validate_bodies
         )
@@ -120,6 +125,7 @@ class QANProtocolWrapper:
             f"Stream reset application_level={application_level!r}, "
             f"reason: {reason_string}"
         )
+        self.qan_helper.cancel_peer_questions()
         self.qan_protocol.stream_reset(reason_string, application_level)
 
     def string_received(self, s: str) -> None:

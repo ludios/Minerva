@@ -77,6 +77,8 @@ class ServerStream:
         self._primary_paused = False
 
         self.disconnected = False
+        # (reason_string, application_level), once the stream has reset.
+        self._reset_reason: tuple[str, bool] | None = None
         # None once the stream has finished.
         self._notifications: list[Deferred[None]] | None = []
         self._send_soon_dc: DelayedCall | None = None
@@ -220,6 +222,7 @@ class ServerStream:
             return
         self._cancel_send_soon()
         self.disconnected = True
+        self._reset_reason = (reason_string, application_level)
         # A copy, because `_transports` shrinks as transports go offline.
         for t in list(self._transports):
             t.close_gently()
@@ -290,6 +293,11 @@ class ServerStream:
         """
         self._transports.add(transport)
         if self.disconnected:
+            # The stream died while this transport was attaching (for example,
+            # while it processed the SACK in its hello frame).  Tell the
+            # client, rather than leave the transport attached and silent.
+            assert self._reset_reason is not None
+            transport.write_reset(*self._reset_reason)
             return
 
         # This is done here rather than in `_new_primary`, because the client
@@ -383,6 +391,9 @@ class ServerStream:
 
     def _try_to_send(self) -> None:
         self._cancel_send_soon()
+        # The stream may have been reset underneath a call to the protocol.
+        if self.disconnected:
+            return
         if self.queue and self._primary_transport is not None:
             start = 0 if self._pretend_acked is None else self._pretend_acked + 1
             self._primary_transport.write_strings(self.queue, start)
@@ -399,6 +410,7 @@ class ServerStream:
             return
         self._cancel_send_soon()
         self.disconnected = True
+        self._reset_reason = (reason_string, application_level)
         # A copy, because `_transports` shrinks as transports go offline.
         for t in list(self._transports):
             t.write_reset(reason_string, application_level)
@@ -448,8 +460,6 @@ class ServerStream:
             ):
                 self._producer.resumeProducing()
             self._primary_paused = False
-            # TODO: test that the transport goes offline right after this.
-            old_primary.close_gently()
         else:
             # Without a primary transport, our push producer was paused.
             if self._producer is not None and self._streaming_producer:
@@ -459,6 +469,11 @@ class ServerStream:
         self._primary_transport = transport
         if self._producer is not None:
             self._register_producer_on_primary()
+        # Close the old primary only now: it goes offline right away, and
+        # `transport_offline` must not mistake it for the primary transport
+        # (which would pause our producer).
+        if old_primary is not None:
+            old_primary.close_gently()
 
 
 class StreamTracker:
@@ -481,6 +496,7 @@ class StreamTracker:
         self._clock = clock
         self._protocol_factory = protocol_factory
         self._streams: dict[str, ServerStream] = {}
+        self._idle_killer: LoopingCall | None = None
 
         if inactive_check_interval is not None:
             self._idle_killer = LoopingCall(self.disconnect_inactive)
@@ -488,6 +504,13 @@ class StreamTracker:
             self._idle_killer.clock = cast(IReactorTime, clock)
             # `now=True` to exercise the code early.
             self._idle_killer.start(inactive_check_interval, now=True)
+
+    def stop(self) -> None:
+        """
+        Stop resetting abandoned streams periodically.
+        """
+        if self._idle_killer is not None and self._idle_killer.running:
+            self._idle_killer.stop()
 
     def get_stream(self, stream_id: str) -> ServerStream:
         try:

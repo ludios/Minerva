@@ -775,7 +775,9 @@ class ServerTransport(TwistedProtocol):
         if streaming and self._paused:
             producer.pauseProducing()
         # We are the producer for the underlying TCP transport or request.
-        self._writable.registerProducer(self, streaming)
+        # (An aborted twisted.web request can't take a producer any more.)
+        if not self._request_aborted:
+            self._writable.registerProducer(self, streaming)
         self._maybe_write_to_peer()
 
     def unregisterProducer(self) -> None:
@@ -783,7 +785,10 @@ class ServerTransport(TwistedProtocol):
         Called by the `ServerStream`.
         """
         self._producer = None
-        self._writable.unregisterProducer()
+        # An aborted twisted.web request has already dropped its producer (and
+        # would raise).
+        if not self._request_aborted:
+            self._writable.unregisterProducer()
 
     # Called by Twisted.  We trust Twisted to call this only if we registered
     # as a push producer.

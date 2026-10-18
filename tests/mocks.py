@@ -262,25 +262,38 @@ class DummySocketLikeTransport:
 
     _next_transport_number: ClassVar[int] = 0
 
-    def __init__(self, transport_number: int | None = None) -> None:
+    def __init__(
+        self, transport_number: int | None = None, stream: ServerStream | None = None
+    ) -> None:
+        """
+        If `stream` is given, closing the transport takes it offline right
+        away, as real transports do.
+        """
         self.log: ListLog[list[Any]] = ListLog()
         if transport_number is None:
             transport_number = DummySocketLikeTransport._next_transport_number
             DummySocketLikeTransport._next_transport_number += 1
         self.transport_number = transport_number
         self.our_seq_num = -1
+        self._stream = stream
 
     def get_new(self) -> list[list[Any]]:
         return self.log.get_new()
 
+    def _close(self, entry: list[Any]) -> None:
+        self.log.append(entry)
+        if self._stream is not None:
+            stream, self._stream = self._stream, None
+            stream.transport_offline(self)
+
     def close_gently(self) -> None:
-        self.log.append(["close_gently"])
+        self._close(["close_gently"])
 
     def caused_rwin_overflow(self) -> None:
-        self.log.append(["caused_rwin_overflow"])
+        self._close(["caused_rwin_overflow"])
 
     def write_reset(self, reason_string: str, application_level: bool) -> None:
-        self.log.append(["write_reset", reason_string, application_level])
+        self._close(["write_reset", reason_string, application_level])
 
     def write_strings(self, queue: Queue, start: int) -> None:
         self.log.append(["write_strings", queue, start])

@@ -11,9 +11,10 @@ from hypothesis import given
 from hypothesis import strategies as st
 from twisted.internet.error import ConnectionLost
 from twisted.internet.task import Clock
+from twisted.internet.testing import StringTransport
 from twisted.python.failure import Failure
-from twisted.web.resource import IResource
-from twisted.web.server import NOT_DONE_YET
+from twisted.web.resource import IResource, Resource
+from twisted.web.server import NOT_DONE_YET, Site
 from twisted.web.static import File
 
 from minerva.decoders import DelimitedStringDecoder
@@ -32,12 +33,13 @@ from minerva.frames import (
 )
 from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import HTTP_RESPONSE_PREAMBLE
-from minerva.web import HttpIo, WebPort, XDRFrame, htmldumps
+from minerva.web import HttpIo, WebPort, XDRFrame, htmldumps, put_child
 from minerva.window import SACK
 from tests.helpers import make_http_hello
 from tests.mocks import (
     DummyStreamTracker,
     FakeRequest,
+    MockProducer,
     MockServerStream,
     MockStringFactory,
 )
@@ -536,3 +538,39 @@ def test_request_finished_even_if_detaching_raises(
     with pytest.raises(ZeroDivisionError):
         transport.close_gently()
     assert request.finished == 1
+
+
+def test_client_aborts_streaming_request_with_producer(clock: Clock) -> None:
+    """
+    twisted.web drops a request's channel before telling us that the client
+    went away.  With a producer registered, unregistering it from the aborted
+    request used to raise, wedging the stream with a dead primary transport.
+    (This needs a real Request and HTTPChannel; FakeRequest can't show it.)
+    """
+    tracker = StreamTracker(clock, MockStringFactory(), inactive_check_interval=None)
+    root = Resource()
+    put_child(root, b"io", HttpIo(clock, tracker))
+    channel = Site(root).buildProtocol(None)
+    assert channel is not None
+    channel.makeConnection(StringTransport())
+    body = make_http_hello(wants_strings=True, streaming_response=True).encode() + b"\n"
+    channel.dataReceived(
+        b"POST /io HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%s"
+        % (len(body), body)
+    )
+    stream = tracker.get_stream(STREAM_ID)
+    producer = MockProducer()
+    stream.registerProducer(producer, streaming=True)
+
+    channel.connectionLost(Failure(ConnectionLost()))
+    assert stream._primary_transport is None
+    assert producer.get_new() == ["pauseProducing"]
+    # The stream still works when the client comes back.
+    post(
+        HttpIo(clock, tracker),
+        make_http_hello(
+            request_new_stream=False, wants_strings=True, streaming_response=True
+        ),
+    )
+    assert stream._primary_transport is not None
+    assert producer.get_new() == ["resumeProducing"]
