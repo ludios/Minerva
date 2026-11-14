@@ -168,6 +168,23 @@ class TestQANProtocolWrapper:
         assert str(exception) == "Stream reset application_level=True, reason: bye"
         assert protocol.log.get_new()[-1] == ["stream_reset", "bye", True]
 
+    def test_cannot_ask_or_notify_after_reset(self, clock: Clock) -> None:
+        """
+        After the stream reset, `ask` and `notify` raise, like
+        `ServerStream.send_string` does.  (`ask` must not return a Deferred
+        that can never fire.)
+        """
+        protocol = RecordingQANProtocol()
+        stream, _transport = start_stream(clock, QANFactory(protocol))
+        assert protocol.qan_helper is not None
+        stream.reset("bye")
+
+        with pytest.raises(RuntimeError, match="disconnected"):
+            protocol.qan_helper.ask("anyone?")
+        assert "waiting for 0 peer answers" in repr(protocol.qan_helper)
+        with pytest.raises(RuntimeError, match="disconnected"):
+            protocol.qan_helper.notify("too late")
+
     def test_bad_qan_frame(self, clock: Clock) -> None:
         stream, transport = start_stream(clock, QANFactory(RecordingQANProtocol()))
         stream.strings_received(transport, [(0, "not QAN")])

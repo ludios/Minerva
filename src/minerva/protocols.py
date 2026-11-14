@@ -11,8 +11,10 @@ from twisted.python.failure import Failure
 from minerva.interfaces import QANProtocol, StringFactory, StringProtocol
 from minerva.qan import (
     InvalidQANFrame,
+    Notification,
     QANFrame,
     QANHelper,
+    Question,
     qan_frame_to_string,
     string_to_qan_frame,
 )
@@ -96,11 +98,14 @@ class QANProtocolWrapper:
 
     def _send_qan_frame(self, frame: QANFrame) -> None:
         assert self.stream is not None
-        if self.stream.disconnected:
-            # For example, an answer that was still being worked out when the
-            # stream reset.
+        if self.stream.disconnected and not isinstance(frame, Question | Notification):
+            # An answer (or a cancellation) that was still being worked out
+            # when the stream reset: the peer no longer waits for it.
             logger.debug("Not sending %r over disconnected %r", frame, self.stream)
             return
+        # For a question or a notification, this raises `RuntimeError` if the
+        # stream is disconnected, so that `ask` never returns a Deferred that
+        # can't fire.
         self.stream.send_string(
             qan_frame_to_string(frame), validate=self._validate_bodies
         )
