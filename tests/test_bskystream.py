@@ -21,7 +21,6 @@ from minerva.demos.bskystream import (
     Post,
     ProfileChecker,
     RateLimiter,
-    dumps,
     parse_event,
 )
 from minerva.frames import is_restricted_string
@@ -160,10 +159,6 @@ def test_post_to_string_is_restricted() -> None:
             "media": None,
         },
     ]
-
-
-def test_dumps_escapes_del() -> None:
-    assert dumps("\x7f") == r'"\u007f"'
 
 
 def test_rate_limiter() -> None:

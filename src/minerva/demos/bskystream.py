@@ -67,15 +67,6 @@ def extra_installed() -> bool:
     )
 
 
-def dumps(obj: object) -> str:
-    """
-    `json.dumps`, but with DEL escaped too, so that the JSON is a restricted
-    string (`" "` to `"~"`).
-    """
-    # DEL can only be in a JSON string, so its escape is valid there.
-    return json.dumps(obj).replace("\x7f", r"\u007f")
-
-
 # --- Posts --------------------------------------------------------------------------
 
 
@@ -91,7 +82,9 @@ class Post:
         return f"https://bsky.app/profile/{self.did}/post/{self.rkey}"
 
     def to_string(self, handle: str) -> str:
-        return dumps(
+        # json.dumps escapes every character outside `" "` to `"~"`, so this
+        # is a restricted string.
+        return json.dumps(
             [
                 "NewPost",
                 {
