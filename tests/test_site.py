@@ -29,7 +29,7 @@ from minerva.site import (
     restricted_string_alphabet,
 )
 from minerva.stream import ServerStream, StreamTracker
-from minerva.web import file_digest
+from minerva.web import RevalidatedFile, file_digest
 from tests.mocks import DummySocketLikeTransport, FakeRequest, MockStringFactory
 
 
@@ -275,7 +275,8 @@ class TestSite:
         request = FakeRequest()
         request.postpath = [b"demos_static", b"whiteboard.css"]
         resource = getChildForRequest(root, request)
-        assert isinstance(resource, File)
+        # Files in a served directory must be revalidated too.
+        assert isinstance(resource, RevalidatedFile)
         assert resource.path == str(DEMOS_STATIC_DIR / "whiteboard.css")
 
     def test_endpoint_info(self, root: Resource) -> None:

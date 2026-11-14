@@ -29,7 +29,6 @@ from twisted.python.failure import Failure
 from twisted.web.http import HTTPChannel
 from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET, Request, Site
-from twisted.web.static import File
 
 from minerva.demos import bskystream
 from minerva.demos.whiteboard import WhiteboardFactory
@@ -38,6 +37,7 @@ from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import ServerTransportFactory
 from minerva.web import (
     PACKAGE_DIR,
+    RevalidatedFile,
     WebPort,
     bad_request,
     file_digest,
@@ -440,8 +440,8 @@ def make_site(
 ) -> ConnectionTrackingSite:
     root = Resource()
 
-    def static(path: Path) -> File:
-        return File(str(path))
+    def static(path: Path) -> RevalidatedFile:
+        return RevalidatedFile(str(path))
 
     put_child(root, b"", static(PACKAGE_DIR / "index.html"))
     put_child(

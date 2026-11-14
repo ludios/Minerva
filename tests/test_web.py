@@ -4,7 +4,7 @@ HTTP support), `XDRFrame`, and `WebPort`.
 """
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hypothesis import given
@@ -13,9 +13,9 @@ from twisted.internet.error import ConnectionLost
 from twisted.internet.task import Clock
 from twisted.internet.testing import StringTransport
 from twisted.python.failure import Failure
-from twisted.web.resource import IResource, Resource
+from twisted.web.resource import IResource, Resource, getChildForRequest
 from twisted.web.server import NOT_DONE_YET, Site
-from twisted.web.static import File
+from twisted.web.static import File, StaticProducer
 
 from minerva.decoders import DelimitedStringDecoder
 from minerva.frames import (
@@ -461,6 +461,29 @@ def test_web_port_children(clock: Clock, mock_tracker: DummyStreamTracker) -> No
         child = children[name]
         assert isinstance(child, File)
         assert child.exists()
+
+
+@pytest.mark.parametrize("name", [b"FlashConnector.swf", b"minerva-client.js"])
+def test_web_port_files_must_be_revalidated(
+    clock: Clock, mock_tracker: DummyStreamTracker, name: bytes
+) -> None:
+    """
+    The browser must ask the server before it reuses a cached copy of the
+    client, or it could keep running an old client after an upgrade.
+    """
+    request = FakeRequest()
+    request.method = b"GET"
+    request.postpath = [name]
+    resource = getChildForRequest(WebPort(clock, mock_tracker), request)
+    assert resource.render(request) == NOT_DONE_YET
+    headers = request.responseHeaders
+    assert headers.getRawHeaders(b"cache-control") == [b"max-age=0, private"]
+    assert headers.getRawHeaders(b"expires") == [b"-1"]
+
+    # Close the file that the response is being produced from.
+    [registration] = request.producers
+    assert registration is not None
+    cast(StaticProducer, registration[0]).stopProducing()
 
 
 @pytest.mark.parametrize("streaming", [False, True])

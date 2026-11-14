@@ -8,13 +8,13 @@ import json
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import cast
+from typing import IO, cast, override
 
 import jinja2
 from markupsafe import Markup
 from twisted.web.resource import IResource, Resource
 from twisted.web.server import NOT_DONE_YET, Request
-from twisted.web.static import File
+from twisted.web.static import File, StaticProducer
 
 from minerva.interfaces import Clock, StreamTrackerLike
 from minerva.transport import ServerTransport
@@ -63,6 +63,30 @@ def put_child(parent: Resource, path: bytes, child: Resource) -> None:
     `IResource`.
     """
     parent.putChild(path, cast(IResource, child))
+
+
+class RevalidatedFile(File):
+    """
+    A `File` (or a directory of files) that tells the browser to ask the
+    server whether its cached copy is still current, every time before it
+    uses that copy.
+
+    A plain `File` sends no caching headers, and then a browser may go on
+    using its cached copy for a while after the file changed (for example,
+    an old `minerva-client.js` after the server was upgraded).
+    """
+
+    @override
+    def makeProducer(
+        self, request: Request, fileForReading: IO[bytes]
+    ) -> StaticProducer:
+        """
+        Set the caching headers, and return the producer that will send the
+        contents of `fileForReading` in response to `request`.
+        """
+        request.setHeader(b"cache-control", b"max-age=0, private")
+        request.setHeader(b"expires", b"-1")
+        return super().makeProducer(request, fileForReading)
 
 
 def bad_request(request: Request, message: str) -> bytes:
@@ -166,12 +190,12 @@ class WebPort(Resource):
         put_child(
             self,
             b"FlashConnector.swf",
-            File(str(COMPILED_CLIENT_DIR / "FlashConnector.swf")),
+            RevalidatedFile(str(COMPILED_CLIENT_DIR / "FlashConnector.swf")),
         )
         # Applications using Closure Library will build their own client
         # instead.
         put_child(
             self,
             b"minerva-client.js",
-            File(str(COMPILED_CLIENT_DIR / "minerva-client.js")),
+            RevalidatedFile(str(COMPILED_CLIENT_DIR / "minerva-client.js")),
         )
