@@ -14,7 +14,7 @@ import html
 import json
 import logging
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NoReturn, cast, override
 
@@ -30,7 +30,7 @@ from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET, Request, Site
 from twisted.web.static import File
 
-from minerva.interfaces import Clock
+from minerva.interfaces import Clock, StringFactory, StringProtocol
 from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import ServerTransportFactory
 from minerva.web import (
@@ -58,7 +58,8 @@ def restricted_string_alphabet() -> str:
 class DemoProtocol:
     """
     Understands a few commands that the chat demo and the JavaScript tests
-    send.
+    send.  The other demos send `subprotocol:<name>` first, after which their
+    own protocol (from `factory.subfactories`) gets the stream.
     """
 
     def __init__(self, factory: DemoFactory, clock: Clock, id: int) -> None:
@@ -66,6 +67,7 @@ class DemoProtocol:
         self._clock = clock
         self._id = id
         self.stream: ServerStream | None = None
+        self._subprotocol: StringProtocol | None = None
         self._reset = False
         self._chatting = False
 
@@ -86,9 +88,15 @@ class DemoProtocol:
             self.stream.send_string(string)
 
     def string_received(self, s: str) -> None:
+        if self._subprotocol is not None:
+            self._subprotocol.string_received(s)
+            return
         stream = self.stream
         assert stream is not None
         match s.partition(":"):
+            case ("subprotocol", ":", name) if name in self.factory.subfactories:
+                self._subprotocol = self.factory.subfactories[name].build_protocol()
+                self._subprotocol.stream_started(stream)
             case ("echo", ":", payload):
                 stream.send_string(payload)
             case ("echo_twice", ":", payload):
@@ -119,13 +127,18 @@ class DemoProtocol:
         logger.info("Stream reset: %r, %r", reason_string, application_level)
         self._reset = True
         self.factory.chatters.discard(self)
+        if self._subprotocol is not None:
+            self._subprotocol.stream_reset(reason_string, application_level)
 
 
 class DemoFactory:
-    def __init__(self, clock: Clock) -> None:
+    def __init__(
+        self, clock: Clock, subfactories: Mapping[str, StringFactory] | None = None
+    ) -> None:
         self._clock = clock
         self._counter = 0
         self.chatters: set[DemoProtocol] = set()
+        self.subfactories = subfactories or {}
 
     def build_protocol(self) -> DemoProtocol:
         self._counter += 1

@@ -27,7 +27,7 @@ from minerva.site import (
     restricted_string_alphabet,
 )
 from minerva.stream import ServerStream, StreamTracker
-from tests.mocks import DummySocketLikeTransport, FakeRequest
+from tests.mocks import DummySocketLikeTransport, FakeRequest, MockStringFactory
 
 
 @pytest.fixture
@@ -103,6 +103,27 @@ class TestDemoProtocol:
 
         stream1.reset_from_peer("bye", True)
         assert factory.chatters == {protocol2}
+
+    def test_subprotocol(self, clock: Clock) -> None:
+        """
+        After `subprotocol:<name>`, a demo's own protocol gets the stream.
+        """
+        subfactory = MockStringFactory()
+        stream, protocol = self.start(clock, DemoFactory(clock, {"demo": subfactory}))
+        protocol.string_received("subprotocol:demo")
+        protocol.string_received("echo:hi")
+        assert subfactory.instance.get_new() == [
+            ["stream_started", stream],
+            ["string_received", "echo:hi"],
+        ]
+        assert self.sent(stream) == []
+        stream.reset("bye")
+        assert subfactory.instance.get_new() == [["stream_reset", "bye", True]]
+
+    def test_unknown_subprotocol(self, clock: Clock, factory: DemoFactory) -> None:
+        stream, protocol = self.start(clock, factory)
+        protocol.string_received("subprotocol:whiteboard")
+        assert self.sent(stream) == ["unknown_message_type"]
 
 
 def test_restricted_string_alphabet() -> None:
