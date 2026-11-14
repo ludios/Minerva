@@ -33,6 +33,11 @@ class TestParseMessage:
             '["Point", {"x": 10.4, "y": 10.6, "color": "#e06666"}]'
         ) == Point(10, 11, "#e06666")
 
+    def test_rounding_stays_on_the_board(self) -> None:
+        assert parse_message(
+            '["Point", {"x": 799.5, "y": 599.9, "color": "#e06666"}]'
+        ) == Point(799, 599, "#e06666")
+
     def test_clear_board(self) -> None:
         assert parse_message('["ClearBoard", null]') == ClearBoard()
 

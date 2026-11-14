@@ -16,6 +16,7 @@ goog.require('goog.events.Event');
 goog.require('goog.events.EventType');
 goog.require('goog.events.BrowserEvent');
 goog.require('goog.graphics');
+goog.require('goog.math');
 goog.require('goog.style');
 goog.require('goog.net.cookies');
 goog.require('goog.ui.Component.EventType');
@@ -223,6 +224,20 @@ whiteboard.drawCircleAt = function(x, y, color) {
 };
 
 
+/**
+ * The board's size in pixels, as in minerva/demos/whiteboard.py.
+ * @type {number}
+ * @const
+ */
+whiteboard.WIDTH = 800;
+
+/**
+ * @type {number}
+ * @const
+ */
+whiteboard.HEIGHT = 600;
+
+
 whiteboard.clearMyBoard = function() {
 	whiteboard.lastDrawArea.dispose();
 	whiteboard.setupDrawArea();
@@ -237,16 +252,17 @@ whiteboard.clearBoard = function() {
 
 whiteboard.handleClick = function(ev) {
 	var patchedEv = new goog.events.BrowserEvent(ev);
-	// Browsers may report fractional coordinates (on zoomed pages, say).
-	var x = Math.round(patchedEv.offsetX);
-	var y = Math.round(patchedEv.offsetY);
+	// Browsers may report fractional coordinates (on zoomed pages, say),
+	// and rounding one in the board's last half pixel would leave the board.
+	var x = goog.math.clamp(Math.round(patchedEv.offsetX), 0, whiteboard.WIDTH - 1);
+	var y = goog.math.clamp(Math.round(patchedEv.offsetY), 0, whiteboard.HEIGHT - 1);
 	whiteboard.drawCircleAt(x, y, whiteboard.currentColor);
 	whiteboard.lastProto.sendCircle(x, y, whiteboard.currentColor);
 };
 
 
 whiteboard.setupDrawArea = function() {
-	var graphics = goog.graphics.createGraphics(800, 600);
+	var graphics = goog.graphics.createGraphics(whiteboard.WIDTH, whiteboard.HEIGHT);
 	whiteboard._drawAreaDiv = goog.dom.getElement('drawArea');
 	graphics.render(whiteboard._drawAreaDiv);
 	whiteboard.lastDrawArea = graphics;

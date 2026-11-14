@@ -66,7 +66,9 @@ def parse_message(s: str) -> Message:
             and 0 <= y < HEIGHT
             and _COLOR.fullmatch(color)
         ):
-            return Point(round(x), round(y), color)
+            # Rounding a coordinate in the board's last half pixel would leave
+            # the board.
+            return Point(min(round(x), WIDTH - 1), min(round(y), HEIGHT - 1), color)
         case ["ClearBoard", None]:
             return ClearBoard()
         case _:

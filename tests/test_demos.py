@@ -162,5 +162,21 @@ def test_whiteboard(site_port: int) -> None:
             # and new points.
             click(bob, "#drawAreaOverlay", 300, 200)
             alice.wait_for(f"{points} == 2", timeout=30)
+            # A click in the board's last half pixel stays on the board.  (Only
+            # a scaled page reports half pixels, and the board's far corner
+            # must be in view to be clicked.)
+            bob.call(
+                "Emulation.setDeviceMetricsOverride",
+                width=1000,
+                height=1000,
+                deviceScaleFactor=2,
+                mobile=False,
+            )
+            click(bob, "#drawAreaOverlay", 799.6, 599.6)
+            alice.wait_for(f"{points} == 3", timeout=30)
+            assert alice.evaluate(
+                "(function(e) { return [e.getAttribute('cx'), e.getAttribute('cy')]; })"
+                "(document.querySelector('#drawArea ellipse:last-of-type'))"
+            ) == ["799", "599"]
             click(alice, ".clear-board-button")
             bob.wait_for(f"{points} == 0", timeout=30)
