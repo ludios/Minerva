@@ -5,9 +5,10 @@ tests/flash_browser.py).  This exercises the uncompiled client against the
 server, including real HTTP long-polling and streaming streams, and (with
 Flash) Flash socket streams.
 
-Skipped unless Closure Library, Coreweb, and the browser are available.  Set
-MINERVA_CLOSURE_LIBRARY and MINERVA_COREWEB to their paths if they aren't next
-to this repository.
+Skipped unless Closure Library, Coreweb, and the browser are available.
+Closure Library is expected in the repository's `closure-library` submodule,
+and Coreweb next to the repository; set MINERVA_CLOSURE_LIBRARY or
+MINERVA_COREWEB to use another path.
 """
 
 import os
@@ -29,7 +30,7 @@ from tests.helpers import run_minerva_site
 
 REPO = Path(__file__).parent.parent
 CLOSURE_LIBRARY = Path(
-    os.environ.get("MINERVA_CLOSURE_LIBRARY", REPO.parent / "closure-library")
+    os.environ.get("MINERVA_CLOSURE_LIBRARY", REPO / "closure-library")
 )
 COREWEB = Path(os.environ.get("MINERVA_COREWEB", REPO.parent / "Coreweb"))
 

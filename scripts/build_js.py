@@ -7,7 +7,7 @@ src/minerva/demos/static/) with Closure Compiler.
 This needs an old Closure Library and Closure Compiler (the JavaScript uses
 APIs that were removed long ago), and a Coreweb checkout:
 
-    CLOSURE_LIBRARY_HOME   default: ../closure-library
+    CLOSURE_LIBRARY_HOME   default: closure-library (the git submodule)
     CLOSURE_COMPILER_HOME  default: ../closure-compiler (with the compiler's jar,
                            and any jars it depends on, in build/)
     COREWEB_HOME           default: ../Coreweb
@@ -27,10 +27,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 os.chdir(REPO)
 
-CLOSURE_LIBRARY = os.environ.get("CLOSURE_LIBRARY_HOME", "../closure-library")
+CLOSURE_LIBRARY = os.environ.get("CLOSURE_LIBRARY_HOME", "closure-library")
 CLOSURE_COMPILER = os.environ.get("CLOSURE_COMPILER_HOME", "../closure-compiler")
 COREWEB = os.environ.get("COREWEB_HOME", "../Coreweb")
-CLOSURE_PYTHON = shlex.split(os.environ.get("CLOSURE_PYTHON", "python2"))
+# -B: write no .pyc files, which would show up as changes in the submodule.
+CLOSURE_PYTHON = [*shlex.split(os.environ.get("CLOSURE_PYTHON", "python2")), "-B"]
 JAVA = shlex.split(os.environ.get("CLOSURE_COMPILER_JAVA", "java"))
 
 COMPILED = "src/minerva/compiled_client"

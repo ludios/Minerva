@@ -43,7 +43,12 @@ You need Python 3.15 and [uv](https://docs.astral.sh/uv/):
 
 ```
 uv sync
+git submodule update --init
 ```
+
+The second command fetches [Closure Library](https://github.com/google/closure-library)
+into `closure-library/`.  Only the development server's pages that use the
+uncompiled JavaScript, the JavaScript tests, and `scripts/build_js.py` need it.
 
 <details>
 <summary>On NixOS</summary>
@@ -145,13 +150,14 @@ DemosMinerva repository):
 
 Pages that use the uncompiled JavaScript need
 [Closure Library](https://github.com/google/closure-library) and
-[Coreweb](https://github.com/ludios/Coreweb)'s JavaScript; by default they are
-expected next to this repository (`../closure-library`, `../Coreweb`), or pass
-`--closure-library` and `--coreweb`.  They also need `js_minerva/`, which is
-not part of the installed package: `minerva-site` finds it only if the
-`minerva` package itself is imported from a checkout of this repository (as
-it is after `uv sync` in the checkout).  Pass `--domain` to let browsers use
-random subdomains.  See `uv run minerva-site --help`.
+[Coreweb](https://github.com/ludios/Coreweb)'s JavaScript.  By default,
+Closure Library is this repository's `closure-library` submodule (see "Setup"),
+and Coreweb is expected next to this repository (`../Coreweb`); to use other
+paths, pass `--closure-library` and `--coreweb`.  They also need
+`js_minerva/`, which is not part of the installed package: `minerva-site`
+finds it only if the `minerva` package itself is imported from a checkout of
+this repository (as it is after `uv sync` in the checkout).  Pass `--domain`
+to let browsers use random subdomains.  See `uv run minerva-site --help`.
 
 
 ## Development
@@ -165,8 +171,9 @@ uv run ty check
 
 The browser tests drive the JavaScript client, and the demos (the Bluesky
 stream against a fake Jetstream), in headless Chrome.  They
-include the client's own test suite (`js_minerva_tests.html`), if Closure
-Library and Coreweb are next to the repository (see below).  You can also run
+include the client's own test suite (`js_minerva_tests.html`), if the
+`closure-library` submodule has been fetched and Coreweb is next to the
+repository.  You can also run
 that suite yourself: start the development server, then browse to
 http://127.0.0.1:8111/js_minerva_tests.html
 
@@ -202,9 +209,8 @@ Library's build tools, and [Haxe](https://haxe.org/) for the Flash connector.
 These work:
 
 - Closure Library r2192 (September 2012), commit
-  [`7f2b29f`](https://github.com/google/closure-library/tree/7f2b29fea671702822e5667faaa80249856a1fc3),
-  in `../closure-library`.  The development server and the JavaScript tests
-  need this too.
+  [`7f2b29f`](https://github.com/google/closure-library/tree/7f2b29fea671702822e5667faaa80249856a1fc3):
+  the `closure-library` submodule is pinned to it (see "Setup").
 - Closure Compiler 20120917, from
   [`compiler-20120917.zip`](https://storage.googleapis.com/google-code-archive-downloads/v2/code.google.com/closure-compiler/compiler-20120917.zip),
   with its `compiler.jar` in `../closure-compiler/build/`.

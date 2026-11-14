@@ -60,6 +60,8 @@ target-version = "py315"
 extend-exclude = [
     # Untracked work-in-progress left by the author; not part of the package.
     "minerva/",
+    # The git submodule; it has Python 2 build tools.
+    "closure-library/",
 ]
 
 [tool.ruff.lint]
@@ -134,7 +136,7 @@ extend-ignore-names = [
 python-version = "3.15"
 
 [tool.ty.src]
-exclude = ["minerva/"]
+exclude = ["minerva/", "closure-library/"]
 
 
 [tool.coverage.run]
