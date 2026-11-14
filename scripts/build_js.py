@@ -30,8 +30,7 @@ os.chdir(REPO)
 CLOSURE_LIBRARY = os.environ.get("CLOSURE_LIBRARY_HOME", "closure-library")
 CLOSURE_COMPILER = os.environ.get("CLOSURE_COMPILER_HOME", "../closure-compiler")
 COREWEB = os.environ.get("COREWEB_HOME", "../Coreweb")
-# -B: write no .pyc files, which would show up as changes in the submodule.
-CLOSURE_PYTHON = [*shlex.split(os.environ.get("CLOSURE_PYTHON", "python2")), "-B"]
+CLOSURE_PYTHON = shlex.split(os.environ.get("CLOSURE_PYTHON", "python2"))
 JAVA = shlex.split(os.environ.get("CLOSURE_COMPILER_JAVA", "java"))
 
 COMPILED = "src/minerva/compiled_client"
@@ -54,7 +53,10 @@ COMPILER_FLAGS = [
 
 
 def run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(args, capture_output=True, text=True)
+    # Closure Library's Python tools must not write .pyc files: those would
+    # show up as untracked files in the submodule.
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    result = subprocess.run(args, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         sys.exit(f"{args[0]} exited with {result.returncode}:\n{result.stderr}")
     return result
@@ -144,17 +146,23 @@ def build_demos() -> None:
 def main() -> None:
     match sys.argv[1:]:
         case [] | ["all"]:
-            build_deps()
-            build_compiled()
-            build_demos()
+            steps = [build_deps, build_compiled, build_demos]
         case ["deps"]:
-            build_deps()
+            steps = [build_deps]
         case ["compile"]:
-            build_compiled()
+            steps = [build_compiled]
         case ["demos"]:
-            build_demos()
+            steps = [build_demos]
         case _:
             sys.exit(__doc__)
+    if not Path(CLOSURE_LIBRARY, "closure/goog/base.js").is_file():
+        sys.exit(
+            f"Could not find Closure Library at {Path(CLOSURE_LIBRARY).resolve()}.  "
+            "If CLOSURE_LIBRARY_HOME is not set, fetch the submodule: run "
+            "`git submodule update --init` in this repository."
+        )
+    for step in steps:
+        step()
 
 
 if __name__ == "__main__":
