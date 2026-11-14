@@ -13,7 +13,7 @@ other; tests use them to substitute fakes.
 """
 
 from collections.abc import Callable, Coroutine
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 # These are only used in annotations, and import this module themselves.
 lazy from twisted.internet.defer import Deferred
@@ -75,6 +75,7 @@ class StringFactory(Protocol):
         ...
 
 
+@runtime_checkable
 class TransportCreatedListener(Protocol):
     def transport_created(self, transport_info: TransportInfo) -> None:
         """
@@ -84,6 +85,7 @@ class TransportCreatedListener(Protocol):
         ...
 
 
+@runtime_checkable
 class TransportDestroyedListener(Protocol):
     def transport_destroyed(self, transport_info: TransportInfo) -> None:
         """

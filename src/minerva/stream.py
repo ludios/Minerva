@@ -319,17 +319,9 @@ class ServerStream:
         # the transport caused the stream to start, because that's a nicer
         # abstraction, and it matches the client: there, `stream_started` is
         # called when you call `.start()`.
-        # The optional methods are looked up with `getattr`, so that a protocol
-        # may also supply them dynamically (a proxy with `__getattr__`, say).
-        transport_created = getattr(self._protocol, "transport_created", None)
-        if transport_created is not None:
-            try:
-                # This can do anything to us, including reset or send_string.
-                transport_created(transport.get_info())
-            except Exception:
-                logger.exception("transport_created raised an uncaught exception")
-            if self.disconnected:
-                return
+        self._call_optional_method("transport_created", transport)
+        if self.disconnected:
+            return
 
         if wants_strings:
             # TODO: do we really need the old primary transport to still be
@@ -367,13 +359,8 @@ class ServerStream:
             if self._producer is not None and self._streaming_producer:
                 self._producer.pauseProducing()
 
-        transport_destroyed = getattr(self._protocol, "transport_destroyed", None)
-        if not self.disconnected and transport_destroyed is not None:
-            try:
-                # This can do anything to us, including reset or send_string.
-                transport_destroyed(transport.get_info())
-            except Exception:
-                logger.exception("transport_destroyed raised an uncaught exception")
+        if not self.disconnected:
+            self._call_optional_method("transport_destroyed", transport)
 
     def get_sack(self) -> SACK:
         """
@@ -382,6 +369,22 @@ class ServerStream:
         return self._incoming.get_sack()
 
     # --- Internals --------------------------------------------------------------
+
+    def _call_optional_method(self, name: str, transport: ServerTransportLike) -> None:
+        """
+        Call the protocol's method `name` (`transport_created` or
+        `transport_destroyed`) with the info of `transport`, if the protocol
+        has that method.  An exception from it is logged.
+        """
+        try:
+            # Looked up with `getattr`, so that a protocol may also supply the
+            # method dynamically (a proxy with `__getattr__`, say).
+            method = getattr(self._protocol, name, None)
+            if method is not None:
+                # This can do anything to us, including reset or send_string.
+                method(transport.get_info())
+        except Exception:
+            logger.exception("%s raised an uncaught exception", name)
 
     def _cancel_send_soon(self) -> None:
         if self._send_soon_dc is not None:

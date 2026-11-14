@@ -364,7 +364,7 @@ class _TransportListenerFactory(MockStringFactory):
 
 class _Proxy:
     """
-    Supplies every method of `target` through `__getattr__`.
+    Forwards every attribute that it lacks to `target`, through `__getattr__`.
     """
 
     def __init__(self, target: object) -> None:
@@ -832,6 +832,61 @@ def test_transport_listeners_raise(
             return _RaisingTransportListener(self)
 
     stream = ServerStream(clock, "some fake id", Factory())
+    t1 = DummySocketLikeTransport()
+    stream.send_string("s")
+    stream.transport_online(t1, True, None)
+    assert t1.get_new() == [["write_strings", stream.queue, 0]]
+    stream.transport_offline(t1)
+    assert len(logged_exceptions(caplog, ZeroDivisionError)) == 2
+    assert stream._primary_transport is None
+
+
+class _LookupRecordingProtocol(MockStringProtocol):
+    """
+    Has no optional methods, and records (or raises from) the lookup of every
+    attribute that it lacks.
+    """
+
+    lookup_raises = False
+
+    def __getattr__(self, name: str) -> Any:
+        self.log.append(["lookup", name])
+        if self.lookup_raises:
+            raise ZeroDivisionError
+        raise AttributeError(name)
+
+
+class _LookupRecordingFactory(MockStringFactory):
+    def build_protocol(self) -> _LookupRecordingProtocol:
+        return _LookupRecordingProtocol(self)
+
+
+def test_transport_destroyed_not_looked_up_during_reset(clock: Clock) -> None:
+    """
+    While the stream resets, its transports detach, and the protocol is not
+    even asked for its `transport_destroyed`.
+    """
+    factory = _LookupRecordingFactory()
+    stream = ServerStream(clock, "some fake id", factory)
+    stream.transport_online(DummySocketLikeTransport(stream=stream), True, None)
+    assert factory.instance.get_new() == [
+        ["stream_started", stream],
+        ["lookup", "transport_created"],
+    ]
+    stream.reset("bye")
+    assert stream._transports == set()
+    assert factory.instance.get_new() == [["stream_reset", "bye", True]]
+
+
+def test_looking_up_transport_listener_raises(
+    clock: Clock, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    An exception from looking up `transport_created` or `transport_destroyed`
+    on the protocol is logged, like an exception from calling it.
+    """
+    monkeypatch.setattr(_LookupRecordingProtocol, "lookup_raises", True)
+    stream = ServerStream(clock, "some fake id", _LookupRecordingFactory())
     t1 = DummySocketLikeTransport()
     stream.send_string("s")
     stream.transport_online(t1, True, None)
