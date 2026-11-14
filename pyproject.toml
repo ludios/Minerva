@@ -101,6 +101,7 @@ extend-ignore-names = [
     "connectionMade",
     "dataReceived",
     "getChild",
+    "getChildWithDefault",
     "getHost",
     "isLeaf",
     "makeConnection",

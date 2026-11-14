@@ -532,6 +532,7 @@ class TestBetterResource:
             b"/leaf/more",
             b"/leaf/more/",
             b"/leaf//",
+            b"/dir//",
             b"/dir/leaf/more",
             b"/plain/more",
             b"/nothing",
@@ -543,6 +544,19 @@ class TestBetterResource:
     )
     def test_not_found(self, root: BetterResource, uri: bytes) -> None:
         assert self.get(root, uri).responseCode == 404
+
+    def test_no_redirect_to_another_host(self) -> None:
+        """
+        `//leaf` is not redirected to `//leaf/`, which a browser would read
+        as a URL on the host `leaf`.
+        """
+        index = BetterResource()
+        put_child(index, b"leaf", _Leaf())
+        root = BetterResource()
+        put_child(root, b"", index)
+        assert self.get(root, b"/leaf").responseCode == 404
+        assert self.get(root, b"//leaf/").responseCode is None  # 200
+        assert self.get(root, b"//leaf").responseCode == 404
 
     @pytest.mark.parametrize("uri", [b"/plain", b"/plain/"])
     def test_child_that_is_not_a_better_resource_is_not_redirected(

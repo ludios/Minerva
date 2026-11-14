@@ -91,16 +91,19 @@ class _PermanentRedirect(Resource):
 
 class BetterResource(Resource):
     """
-    A `Resource` that serves each of its children at exactly one URL, so that
-    nobody can link to (or cache, or match a proxy rule against) a second URL
-    for the same page:
+    A `Resource` that is strict about the URLs of the children registered
+    with `putChild`, so that nobody links to (or caches, or matches a proxy
+    rule against) a second URL for the same page:
 
-    - If a child is a leaf, a URL with more path segments after the child's
+    - If the child is a leaf, a URL with more path segments after the child's
       name (`/child/more`) gets a 404 Not Found response.  A plain `Resource`
       would serve the child.
-    - If a child is a `BetterResource`, the URL without the final slash
-      (`/child`) gets a redirect to `/child/`.  A plain `Resource` would serve
-      a leaf child at both URLs.
+    - If the child is a `BetterResource` too, the URL without the final slash
+      (`/child`) gets a redirect to `/child/`, provided that the child is a
+      leaf or has a child registered for the empty path segment.  A plain
+      `Resource` would serve a leaf child at both URLs.
+
+    Children that `getChild` creates get neither treatment.
     """
 
     @override
@@ -116,11 +119,18 @@ class BetterResource(Resource):
         if child is None:
             # A dynamic child, or the 404 page.
             return self.getChild(path, request)
-        if child.isLeaf and request.postpath not in ([], [b""]):
+        # After a leaf's name, only the final slash (one empty segment) may
+        # follow.  A leaf whose name is the empty segment already has it.
+        more = request.postpath
+        if child.isLeaf and more and (more != [b""] or path == b""):
             return notFound()
-        if not request.postpath and path != b"" and isinstance(child, BetterResource):
-            # `/child` was requested.  Redirect only if `/child/` exists.
+        if not more and path != b"" and isinstance(child, BetterResource):
+            # `/child` was requested.
             if not child.isLeaf and b"" not in child.children:
+                return notFound()
+            # A browser would read a `Location` that starts with `//` as a
+            # URL on another host.
+            if request.uri.startswith(b"//"):
                 return notFound()
             url_path, question_mark, query = request.uri.partition(b"?")
             return _PermanentRedirect(url_path + b"/" + question_mark + query)

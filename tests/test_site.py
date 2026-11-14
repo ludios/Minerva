@@ -262,11 +262,14 @@ class TestSite:
             (b"/@testres_Minerva/GetEndpointInfo/more", 404),
             (b"/_minerva/io", 301),
             (b"/_minerva/io/more", 404),
-            # Requested without the final slash by old pages; not redirected.
+            # Not a `BetterResource` (nor was it on master), so not redirected.
+            (b"/wait_resource", None),
             (b"/wait_resource/more", 404),
         ],
     )
-    def test_one_url_per_page(self, root: Resource, path: bytes, code: int) -> None:
+    def test_one_url_per_page(
+        self, root: Resource, path: bytes, code: int | None
+    ) -> None:
         request = FakeRequest()
         request.method = b"GET"
         request.uri = path
