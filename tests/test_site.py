@@ -203,6 +203,25 @@ def test_warns_when_js_minerva_is_missing(
     assert warning in caplog.text
 
 
+def test_warns_when_closure_library_is_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    At startup, `minerva-site` says so when the Closure Library path lacks
+    closure/goog/base.js (as when the submodule has not been fetched).
+    """
+    warning = "Could not find Closure Library"
+    args = parse_args(["--http", "tcp:8111", "--closure-library", str(tmp_path)])
+    _warn_about_setup(args)
+    assert warning in caplog.text
+
+    caplog.clear()
+    (tmp_path / "closure" / "goog").mkdir(parents=True)
+    (tmp_path / "closure" / "goog" / "base.js").touch()
+    _warn_about_setup(args)
+    assert warning not in caplog.text
+
+
 def make_root(clock: Clock, tmp_path: Path) -> Resource:
     tracker = StreamTracker(clock, DemoFactory(clock), inactive_check_interval=None)
     site = make_site(

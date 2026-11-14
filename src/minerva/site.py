@@ -8,8 +8,8 @@ and resources.
 Then open http://127.0.0.1:8111/ in your browser.  The pages that use the
 uncompiled JavaScript need Closure Library and Coreweb's JavaScript; by default
 Closure Library is the repository's `closure-library` submodule, and Coreweb is
-found next to the repository (`../Coreweb`).  They also need `js_minerva/`,
-which is in the repository but not in the installed package.
+found next to the repository (`../Coreweb`).  Those pages also need
+`js_minerva/`, which is in the repository but not in the installed package.
 """
 
 import argparse
@@ -607,9 +607,10 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
     if not (args.closure_library / "closure" / "goog" / "base.js").is_file():
         _warn(
             f"Could not find Closure Library at {args.closure_library}.  Many pages "
-            "on minerva-site will be broken.  In a checkout of Minerva's "
-            "repository, run `git submodule update --init` to fetch it; "
-            "otherwise, pass --closure-library."
+            "on minerva-site will be broken.  If that path is the "
+            "`closure-library` submodule in a checkout of Minerva's repository, "
+            "run `git submodule update --init` in that checkout to fetch it; if "
+            "it is not, pass the path of a Closure Library with --closure-library."
         )
     if not (args.coreweb / "js_coreweb").is_dir():
         _warn(

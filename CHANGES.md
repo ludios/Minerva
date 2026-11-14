@@ -37,8 +37,9 @@ with Adobe Flash Player (see the README).
   find `js_minerva/`, it logs a warning at startup.
 - Closure Library r2192, which the uncompiled JavaScript needs, is now a git
   submodule (`closure-library/`); fetch it with `git submodule update --init`.
-  `minerva-site --closure-library`, the JavaScript tests and
-  `scripts/build_js.py` use it by default, instead of `../closure-library`.
+  It replaces `../closure-library` as the default path for `minerva-site`
+  (which `--closure-library PATH` overrides), for the JavaScript tests, and
+  for `scripts/build_js.py`.
 - The tutorials run with `python -m minerva.tutorial.standalone_N_...`.
 - Build scripts moved to `scripts/` and were ported to Python 3.
 - `js_minerva_tests.html?report=URL` POSTs the test results to `URL` when the

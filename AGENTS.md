@@ -176,7 +176,7 @@ js_minerva/ and Coreweb's JavaScript are compiled with the toolchain of 2012: Cl
 - There is no package.json, and nothing here runs in Node.
 - The compiled files are checked in. After changing anything under js_minerva/demos/, run `scripts/build_js.py deps` and then `scripts/build_js.py demos` (they read closure-library/, ../closure-compiler and ../Coreweb, and run `python2` and `java`; all are on this machine), check that each `.js.log` in src/minerva/demos/static/ says `0 error(s), 0 warning(s)`, and commit the rebuilt files together with the source change.
 - After changing js_minerva/cw/ or js_minerva/minerva-client.js, run `scripts/build_js.py` with no argument, which also rebuilds src/minerva/compiled_client/. The files there are still the build from 2012, made with an older Coreweb and Closure Compiler, so the first such build rewrites most of their lines; tell the user before committing that.
-- The browser tests of the demos load only the compiled JavaScript. To check the uncompiled JavaScript, load `/whiteboard_dev/` or `/bluesky-stream_dev/` from a `minerva-site` that was started with `--closure-library closure-library --coreweb ../Coreweb`.
+- The browser tests of the demos load only the compiled JavaScript. To check the uncompiled JavaScript, load `/whiteboard_dev/` or `/bluesky-stream_dev/` from a `minerva-site` that was started without `--closure-library` and without `--coreweb` (the defaults are this checkout's closure-library/ and ../Coreweb).
 - `scripts/build_swfs.sh` needs Haxe, which is not installed on this machine.
 
 # Before committing
@@ -186,7 +186,7 @@ js_minerva/ and Coreweb's JavaScript are compiled with the toolchain of 2012: Cl
 	uv run ty check
 	uv run pytest
 
-All four must pass, and pytest must skip nothing: on this machine Chrome, ../Coreweb and ../flash-browser are present, and the closure-library submodule has been fetched, so the browser tests (headless Chrome, and Pale Moon with Flash Player under Xvfb) all run. The whole suite takes about 20 seconds.
+All four must pass, and pytest must skip nothing: on this machine Chrome, ../Coreweb and ../flash-browser are present, so the browser tests (headless Chrome, and Pale Moon with Flash Player under Xvfb) all run, unless closure-library/ is empty: a new clone must first run `git submodule update --init`. The whole suite takes about 20 seconds.
 
 On this machine, the `ruff` and `ty` that uv installs into .venv cannot run until `scripts/nixos-fix-venv.sh` has patched them. Until then, `uv run ruff` and `uv run ty` silently run the system's newer `ruff` and `ty`, which report other diagnostics than the versions in uv.lock. So after uv creates or changes .venv (it prints "Installed N packages"), run `scripts/nixos-fix-venv.sh`, and check that `uv run ty --version` prints the version of `ty` in uv.lock.
 

@@ -77,7 +77,8 @@
   FileCache.  Cache-breaker = md5 of the known file.
 - **Dev server**: `minerva-site` console script (argparse + endpoints +
   `task.react`) replaces twistd plugin + `tap.py`.  Paths to closure-library and
-  Coreweb's `js_coreweb`/`testres` are options (default: siblings of repo).
+  Coreweb's `js_coreweb`/`testres` are options (defaults: the `closure-library`
+  submodule, and `../Coreweb`).
 - `mserver.py` (1900 lines) split into cohesive modules; public API re-exported
   from `minerva/__init__.py` (with PEP 810 `lazy from ... import`).
 
