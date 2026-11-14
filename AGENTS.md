@@ -173,7 +173,9 @@ js_minerva/ and Coreweb's JavaScript are compiled with the toolchain of 2012: Cl
 
 - Write ES3, as the surrounding code does: `var`, `function`, `goog.provide` and `goog.require`, JSDoc type annotations, camelCase, tabs. Closure Compiler 20120917 rejects newer syntax, and the compiled code must still parse in old browsers.
 - There is no package.json, and nothing here runs in Node.
-- The compiled files are checked in. After changing anything under js_minerva/, run `scripts/build_js.py` (it reads ../closure-library, ../closure-compiler and ../Coreweb, and runs `python2` and `java`; all are on this machine), check that each `.js.log` next to a compiled file says `0 error(s), 0 warning(s)`, and commit the rebuilt files together with the source change.
+- The compiled files are checked in. After changing anything under js_minerva/demos/, run `scripts/build_js.py deps` and then `scripts/build_js.py demos` (they read ../closure-library, ../closure-compiler and ../Coreweb, and run `python2` and `java`; all are on this machine), check that each `.js.log` in src/minerva/demos/static/ says `0 error(s), 0 warning(s)`, and commit the rebuilt files together with the source change.
+- After changing js_minerva/cw/ or js_minerva/minerva-client.js, run `scripts/build_js.py` with no argument, which also rebuilds src/minerva/compiled_client/. The files there are still the build from 2012, made with an older Coreweb and Closure Compiler, so the first such build rewrites most of their lines; tell the user before committing that.
+- The browser tests of the demos load only the compiled JavaScript. To check the uncompiled JavaScript, load `/whiteboard_dev/` or `/bluesky-stream_dev/` from a `minerva-site` that was started with `--closure-library ../closure-library --coreweb ../Coreweb`.
 - `scripts/build_swfs.sh` needs Haxe, which is not installed on this machine.
 
 # Before committing
