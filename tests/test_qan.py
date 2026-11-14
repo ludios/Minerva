@@ -371,6 +371,45 @@ class TestQANHelper:
         h.handle_qan_frame(OkayAnswer("no", 1))
         h.handle_qan_frame(KnownErrorAnswer("what?", 2))
 
+    def test_fail_all_when_an_errback_cancels_another_question(self) -> None:
+        """
+        `fail_all` doesn't errback a question a second time, if the errback of
+        an earlier question cancelled it meanwhile.
+        """
+        h = QANHelper(unused, unused, lambda _: None, unused)
+        d1 = h.ask("one")
+        d2 = h.ask("two")
+        d1.addErrback(lambda _: d2.cancel())
+        h.fail_all("gone")
+        failure_result_of(d2, CancelledError)
+
+    def test_cancel_peer_questions_survives_a_raising_canceller(self) -> None:
+        """
+        A canceller that raises is logged, and the other answers are still
+        cancelled.
+        """
+
+        def bad_canceller(d: Deferred[str]) -> None:
+            raise ZeroDivisionError
+
+        answers: list[Deferred[str]] = [Deferred(bad_canceller), Deferred()]
+        errors: ListLog[tuple[str, Failure]] = ListLog()
+        h = QANHelper(
+            lambda body, is_question: answers.pop(0),
+            lambda message, failure: errors.append((message, failure)),
+            lambda _: None,
+            unused,
+        )
+        h.handle_qan_frame(Question("first", 1))
+        h.handle_qan_frame(Question("second", 2))
+        h.cancel_peer_questions()
+
+        [(message, failure)] = errors.get_new()
+        assert message == "Cancelling the answer to peer's Question #1 raised"
+        assert failure.check(ZeroDivisionError)
+        # Only the answer to the first question is still pending.
+        assert "and 1 local answers" in repr(h)
+
     def test_fail_all_after_cancel_and_twice(self) -> None:
         """
         `fail_all` skips questions that were already given up on.  (The

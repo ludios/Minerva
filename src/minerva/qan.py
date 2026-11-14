@@ -311,6 +311,10 @@ class QANHelper:
         Returns a Deferred that fires with the answer's body, or errbacks with
         `KnownError`, `UnknownError`, or `QuestionFailed`.  Cancelling it sends
         a Cancellation to the peer.
+
+        If the question can't be sent, this raises what `send_qan_frame`
+        raised.  (With `QANProtocolWrapper`, that is a `RuntimeError` after
+        the stream reset.)  The same goes for `notify`.
         """
         qid = self._qid_counter + 1
         # This may raise if `body` is invalid.
@@ -332,15 +336,26 @@ class QANHelper:
         Cancel the Deferreds (or coroutines) answering the peer's questions,
         for example because the stream is gone.
         """
-        for d in list(self._their_questions.values()):
-            d.cancel()
+        for qid, d in list(self._their_questions.items()):
+            try:
+                d.cancel()
+            except Exception:
+                # The application's canceller raised.  Go on, so that the
+                # other answers are cancelled too.
+                self._log_error(
+                    f"Cancelling the answer to peer's Question #{qid} raised",
+                    Failure(),
+                )
 
     def fail_all(self, reason: str) -> None:
         """
         Errback all of our pending questions with `QuestionFailed(reason)`.
         """
         # A list() copy, because some buggy errback might .ask() a question.
-        for qid, d in list(self._our_questions.items()):
-            self._our_questions[qid] = None
+        for qid in list(self._our_questions):
+            # Looked up only now, because the errback of an earlier question
+            # may have cancelled this one.
+            d = self._our_questions.get(qid)
             if d is not None:
+                self._our_questions[qid] = None
                 d.errback(QuestionFailed(reason))
