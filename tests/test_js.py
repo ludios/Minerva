@@ -13,8 +13,6 @@ to this repository.
 import os
 import queue
 import re
-import subprocess
-import sys
 import threading
 import time
 import urllib.parse
@@ -27,6 +25,7 @@ import pytest
 
 from tests import flash_browser
 from tests.chrome import CHROME, open_page
+from tests.helpers import run_minerva_site
 
 REPO = Path(__file__).parent.parent
 CLOSURE_LIBRARY = Path(
@@ -51,31 +50,11 @@ def site_port(tmp_path: Path) -> Iterator[int]:
     """
     Run minerva-site on ephemeral ports; yield its HTTP port.
     """
-    log = tmp_path / "minerva-site.log"
-    command = [sys.executable, "-m", "minerva.site"]
-    command += [
-        "--http",
-        "tcp:0:interface=127.0.0.1",
-        "--minerva",
-        "tcp:0:interface=127.0.0.1",
-    ]
-    command += ["--closure-library", str(CLOSURE_LIBRARY), "--coreweb", str(COREWEB)]
-    # Log to a file, so that a full pipe can't block the server.
-    with (
-        log.open("w") as log_file,
-        subprocess.Popen(command, stderr=log_file) as server,
-    ):
-        try:
-            deadline = time.monotonic() + 30
-            while not (
-                match := re.search(r"HTTP server on .*port=(\d+)", log.read_text())
-            ):
-                assert server.poll() is None, log.read_text()
-                assert time.monotonic() < deadline, log.read_text()
-                time.sleep(0.05)
-            yield int(match[1])
-        finally:
-            server.terminate()
+    with run_minerva_site(
+        tmp_path / "minerva-site.log",
+        ["--closure-library", str(CLOSURE_LIBRARY), "--coreweb", str(COREWEB)],
+    ) as port:
+        yield port
 
 
 def check_results(results: str) -> str:

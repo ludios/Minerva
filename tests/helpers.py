@@ -2,8 +2,14 @@
 Small helpers shared by the tests.
 """
 
-from collections.abc import Iterator
+import re
+import subprocess
+import sys
+import time
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import contextmanager
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 from twisted.internet.defer import Deferred
@@ -105,3 +111,30 @@ def failure_result_of[E: BaseException](d: Deferred[Any], expected: type[E]) -> 
     if not isinstance(result.value, expected):
         raise AssertionError(f"{d!r} failed unexpectedly: {result.getTraceback()}")
     return result.value
+
+
+@contextmanager
+def run_minerva_site(log: Path, args: Sequence[str] = ()) -> Generator[int]:
+    """
+    Run minerva-site on ephemeral ports, with the extra `args`, logging to
+    `log`.  Yield its HTTP port.
+    """
+    command = [sys.executable, "-m", "minerva.site"]
+    command += ["--http", "tcp:0:interface=127.0.0.1"]
+    command += ["--minerva", "tcp:0:interface=127.0.0.1", *args]
+    # Log to a file, so that a full pipe can't block the server.
+    with (
+        log.open("w") as log_file,
+        subprocess.Popen(command, stderr=log_file) as server,
+    ):
+        try:
+            deadline = time.monotonic() + 30
+            while not (
+                match := re.search(r"HTTP server on .*port=(\d+)", log.read_text())
+            ):
+                assert server.poll() is None, log.read_text()
+                assert time.monotonic() < deadline, log.read_text()
+                time.sleep(0.05)
+            yield int(match[1])
+        finally:
+            server.terminate()
