@@ -581,6 +581,14 @@ class BskyStreamProtocol:
             self.stream.send_string(string)
 
 
+@dataclass(slots=True)
+class _CheckingAuthor:
+    post: Post
+    done: bool = False
+    # If done: the author's handle, if we may show their posts.
+    handle: str | None = None
+
+
 class BskyStreamFactory:
     """
     Builds the protocols for the viewers, and feeds them posts from Jetstream
@@ -634,14 +642,6 @@ class BskyStreamFactory:
         for viewer in list(self.viewers):
             if viewer.wants(post):
                 viewer.send_post(string)
-
-
-@dataclass(slots=True)
-class _CheckingAuthor:
-    post: Post
-    done: bool = False
-    # If done: the author's handle, if we may show their posts.
-    handle: str | None = None
 
 
 def make_factory(
