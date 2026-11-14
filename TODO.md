@@ -271,3 +271,20 @@ Library.  Suggested order, mirroring how the Python port went:
       (Chrome: 23), i.e. RealFlashSocketTests now run and pass.  Verified the
       tests fail without the plugin and with a policy file that doesn't allow
       the port.
+- [x] 13. Merged DemosMinerva (2026-10-26; github.com/ludios/DemosMinerva,
+      py2, last real change 2012) into `src/minerva/demos/` + `js_minerva/
+      demos/`, served by minerva-site (`/whiteboard/`, `/bluesky-stream/`, and
+      `_dev` variants).  History was not merged (mostly "Rebuild JS" commits).
+      The LiveJournal stream demo's source (atom.services.livejournal.com) is
+      dead, so it became a Bluesky stream: Jetstream v2 over Twisted 26.4's
+      `twisted.web.websocket` client (needs the `demos` extra =
+      `twisted[tls,websocket]`, also in the dev group), skipping replies and
+      self-labeled posts; authors' profiles are batch-checked via
+      public.api.bsky.app `getProfiles` (any profile label, incl.
+      `!no-unauthenticated`, means don't show); posts are sent in Jetstream
+      order, <= 4/s per viewer.  Twisted's WebSocket `connect()` never fires
+      if TCP drops mid-handshake, so JetstreamClient handles that (and a
+      connect timeout) itself.  The demos' JS compiles with 0 warnings via
+      `scripts/build_js.py demos`; Googstyle's CSS/images were replaced by the
+      compiled CSS + two Closure Library images.  tests/test_demos.py runs both
+      demos in headless Chrome (Bluesky against a fake Jetstream/AppView).

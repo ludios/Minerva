@@ -35,6 +35,28 @@ with Adobe Flash Player (see the README).
 - `js_minerva_tests.html?report=URL` POSTs the test results to `URL` when the
   tests finish, for browsers that tests can't remote-control.
 
+### Demos
+
+- The demos from the separate DemosMinerva repository are now part of Minerva
+  (`minerva.demos`, `js_minerva/demos/`), served by `minerva-site`, and
+  tested end to end in headless Chrome.  Their compiled JavaScript is built
+  by `scripts/build_js.py`, and they no longer need Googstyle or Webmagic.
+- `/whiteboard/`: the multi-user whiteboard.  Coordinates may be fractional
+  (modern browsers report them on zoomed pages), and the server checks the
+  points' bounds and colors, keeps at most 10,000 of them, and resets
+  clients that fall too far behind.
+- `/bluesky-stream/` replaces the stream of public LiveJournal posts, whose
+  source (LiveJournal's Atom stream) is gone.  It shows a sample of new
+  public Bluesky posts from Jetstream, skipping replies, labeled posts, and
+  authors who asked not to be shown to logged-out viewers, with a language
+  picker instead of the "Show new Russian posts" checkbox.  It needs the new
+  `demos` extra (`twisted[tls,websocket]`); `minerva-site` has `--jetstream`
+  and `--bluesky-appview` options.
+- The demo pages default to `?mode=http`, since browsers no longer run
+  Flash.
+- `DemoProtocol` (the chat demo's) hands the stream to a demo's own protocol
+  when the client's first string is `subprotocol:<name>`.
+
 ### API
 
 - Everything Minerva owns is snake_case: `ServerStream.send_string`,

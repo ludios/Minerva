@@ -121,16 +121,27 @@ To also accept Flash socket connections, listen on TCP with a
 
 ## The development server
 
-`minerva-site` serves the JavaScript tests, the chat demo, and some testing
-tools:
+`minerva-site` serves the JavaScript tests, the demos, and some testing tools:
 
 ```
 uv run minerva-site --http tcp:8111:interface=127.0.0.1 --minerva tcp:8112:interface=127.0.0.1
 ```
 
-Then browse to http://127.0.0.1:8111/.  Follow the `chatapp/?mode=http` link
-for a simple demo; you can load it in multiple browsers and chat amongst
-each other.
+Then browse to http://127.0.0.1:8111/.  The demos (in
+[src/minerva/demos/](src/minerva/demos/); they used to be the separate
+DemosMinerva repository):
+
+- `whiteboard/`: a whiteboard that everyone viewing it draws on together.
+  Open it in two browsers.
+- `bluesky-stream/`: a live sample of new public Bluesky posts, from
+  Bluesky's [Jetstream](https://bsky.network/docs/jetstream/).  It skips
+  replies, posts that their authors labeled, and authors who asked not to be
+  shown to logged-out viewers (or who have moderation labels).  It needs the
+  `demos` extra (`pip install 'minerva[demos]'`; `uv sync` installs it).
+  It replaced DemosMinerva's stream of public LiveJournal posts, which ended
+  with LiveJournal's Atom stream.
+- `chatapp/?mode=http`: a simple chat, mostly for inspecting Minerva's
+  traffic.
 
 Pages that use the uncompiled JavaScript need
 [Closure Library](https://github.com/google/closure-library) and
@@ -149,7 +160,8 @@ uv run ruff format && uv run ruff check
 uv run ty check
 ```
 
-The browser tests drive the JavaScript client in headless Chrome.  They
+The browser tests drive the JavaScript client, and the demos (the Bluesky
+stream against a fake Jetstream), in headless Chrome.  They
 include the client's own test suite (`js_minerva_tests.html`), if Closure
 Library and Coreweb are next to the repository (see below).  You can also run
 that suite yourself: start the development server, then browse to
@@ -179,7 +191,8 @@ them.  The allowed names are listed in `pyproject.toml`.
 
 ## Recompiling the compiled .js and .swf files
 
-The compiled files in `src/minerva/compiled_client/` are checked in.  To
+The compiled files in `src/minerva/compiled_client/` (and the demos' in
+`src/minerva/demos/static/`) are checked in.  To
 rebuild them, you need an old Closure Library and Closure Compiler (the
 JavaScript uses APIs that have since been removed), Python 2 for Closure
 Library's build tools, and [Haxe](https://haxe.org/) for the Flash connector.
