@@ -147,7 +147,10 @@ Pages that use the uncompiled JavaScript need
 [Closure Library](https://github.com/google/closure-library) and
 [Coreweb](https://github.com/ludios/Coreweb)'s JavaScript; by default they are
 expected next to this repository (`../closure-library`, `../Coreweb`), or pass
-`--closure-library` and `--coreweb`.  Pass `--domain` to let browsers use
+`--closure-library` and `--coreweb`.  They also need `js_minerva/`, which is
+not part of the installed package: `minerva-site` finds it only if the
+`minerva` package itself is imported from a checkout of this repository (as
+it is after `uv sync` in the checkout).  Pass `--domain` to let browsers use
 random subdomains.  See `uv run minerva-site --help`.
 
 

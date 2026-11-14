@@ -8,6 +8,8 @@ and resources.
 Then open http://127.0.0.1:8111/ in your browser.  The pages that use the
 uncompiled JavaScript need Closure Library and Coreweb's JavaScript; by default
 they're found next to this repository (`../closure-library`, `../Coreweb`).
+They also need `js_minerva/`, which is in the repository but not in the
+installed package.
 """
 
 import argparse
@@ -589,7 +591,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def _warn(message: str) -> None:
-    logger.warning("\n%s", textwrap.fill(message, 70))
+    # Paths in the message stay in one piece.
+    wrapped = textwrap.fill(message, 70, break_long_words=False, break_on_hyphens=False)
+    logger.warning("\n%s", wrapped)
 
 
 def _warn_about_setup(args: argparse.Namespace) -> None:
@@ -611,11 +615,14 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
             f"Could not find Coreweb at {args.coreweb}.  Pages that use the "
             "uncompiled JavaScript will be broken; pass --coreweb."
         )
-    if not (_JS_MINERVA_DIR / "deps.js").is_file():
+    if not _JS_MINERVA_DIR.is_dir():
         _warn(
-            f"Could not find Minerva's JavaScript at {_JS_MINERVA_DIR}.  Pages that "
-            "use the uncompiled JavaScript will be broken; run minerva-site from a "
-            "checkout of Minerva's repository (for example, with `uv run`)."
+            f"Could not find Minerva's uncompiled JavaScript: {_JS_MINERVA_DIR} is "
+            "not a directory.  Pages that use the uncompiled JavaScript will be "
+            "broken.  js_minerva/ is not part of the installed package: "
+            "minerva-site finds it only if the `minerva` package itself is "
+            "imported from a checkout of Minerva's repository (as it is after "
+            "`uv sync` in that checkout)."
         )
     if not bskystream.extra_installed():
         _warn(
