@@ -395,8 +395,38 @@ class TestJetstreamClient:
         client.start()
         client.start()
         assert len(jetstream.attempts) == 1
-        jetstream.handshake().textMessageReceived("hi")
-        assert messages == ["hi"]
+        jetstream.handshake().textMessageReceived("[1]")
+        assert messages == ["[1]"]
+
+    def test_message_in_pieces(
+        self, client: JetstreamClient, jetstream: FakeJetstream, messages: list[str]
+    ) -> None:
+        """
+        Twisted passes on each piece of a WebSocket message that arrived in
+        several TCP reads; the client gets whole messages.
+        """
+        client.start()
+        protocol = jetstream.handshake()
+        for piece in ['{"text": ', '"a } in a string', '"}', "[1]"]:
+            protocol.textMessageReceived(piece)
+        assert messages == ['{"text": "a } in a string"}', "[1]"]
+
+    def test_drops_a_connection_that_sends_no_json(
+        self,
+        client: JetstreamClient,
+        jetstream: FakeJetstream,
+        messages: list[str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        client.start()
+        protocol = jetstream.handshake()
+        protocol.max_message_length = 10
+        protocol.textMessageReceived("0123456789")
+        assert not jetstream.aborted
+        protocol.textMessageReceived("x")
+        assert jetstream.aborted
+        assert messages == []
+        assert "11 characters that aren't a JSON message" in caplog.text
 
     def test_reconnects_with_backoff(
         self,
@@ -418,7 +448,7 @@ class TestJetstreamClient:
         assert len(jetstream.attempts) == 3
         # A message means the connection works, so the backoff starts over.
         protocol = jetstream.handshake()
-        protocol.textMessageReceived("hi")
+        protocol.textMessageReceived("[1]")
         protocol.connectionLost(Failure(ConnectionError()))
         clock.advance(10)
         assert len(jetstream.attempts) == 4
@@ -433,15 +463,15 @@ class TestJetstreamClient:
         client.start()
         protocol = jetstream.handshake()
         clock.advance(client.max_silence - 1)
-        protocol.textMessageReceived("hi")
+        protocol.textMessageReceived("[1]")
         clock.advance(client.max_silence - 1)
         assert not jetstream.aborted
         clock.advance(1)
         assert jetstream.aborted
         # The aborted connection can't deliver messages or cause more retries.
-        protocol.textMessageReceived("late")
+        protocol.textMessageReceived("[2]")
         protocol.connectionLost(Failure(ConnectionError()))
-        assert messages == ["hi"]
+        assert messages == ["[1]"]
         clock.advance(10)
         assert len(jetstream.attempts) == 2
         clock.advance(1000)
@@ -498,8 +528,8 @@ class TestJetstreamClient:
         assert clock.getDelayedCalls() == []
         # It can start again.
         client.start()
-        jetstream.handshake().textMessageReceived("hi")
-        assert messages == ["hi"]
+        jetstream.handshake().textMessageReceived("[1]")
+        assert messages == ["[1]"]
 
     def test_stop_while_waiting_to_retry(
         self, clock: Clock, client: JetstreamClient, jetstream: FakeJetstream

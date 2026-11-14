@@ -328,9 +328,14 @@ class JetstreamProtocol:
     messages on to a `JetstreamClient`.
     """
 
+    # In characters.  Much more than any Jetstream message has.
+    max_message_length = 1024 * 1024
+
     def __init__(self, client: JetstreamClient) -> None:
         self._client = client
         self.transport: WebSocketTransport | None = None
+        # The pieces so far of a message that is still arriving.
+        self._partial = ""
 
     def negotiationStarted(self, transport: WebSocketTransport) -> None:
         self.transport = transport
@@ -339,6 +344,24 @@ class JetstreamProtocol:
         pass
 
     def textMessageReceived(self, message: str) -> None:
+        # Twisted 26.4 calls this once for each piece of a message that
+        # arrived in several TCP reads, and doesn't say whether the message is
+        # complete.  A Jetstream message is one JSON object, and no proper
+        # prefix of a JSON object is valid JSON.  So the message is complete
+        # when the pieces so far are valid JSON.
+        self._partial += message
+        try:
+            json.loads(self._partial)
+        except ValueError:
+            if len(self._partial) > self.max_message_length:
+                logger.warning(
+                    "Jetstream sent %d characters that aren't a JSON message",
+                    len(self._partial),
+                )
+                self._partial = ""
+                self.abort()
+            return
+        message, self._partial = self._partial, ""
         self._client.message_received(self, message)
 
     def bytesMessageReceived(self, data: bytes | bytearray) -> None:
