@@ -581,26 +581,26 @@ def test_web_port_children(clock: Clock, mock_tracker: DummyStreamTracker) -> No
 
 
 @pytest.mark.parametrize("name", [b"FlashConnector.swf", b"minerva-client.js"])
+@pytest.mark.parametrize("method", [b"GET", b"HEAD"])
 def test_web_port_files_must_be_revalidated(
-    clock: Clock, mock_tracker: DummyStreamTracker, name: bytes
+    clock: Clock, mock_tracker: DummyStreamTracker, name: bytes, method: bytes
 ) -> None:
     """
-    The browser must ask the server before it reuses a cached copy of the
-    client, or it could keep running an old client after an upgrade.
+    The responses say that a cached copy of the client is stale at once, or
+    a browser could keep running an old client after an upgrade.
     """
     request = FakeRequest()
-    request.method = b"GET"
+    request.method = method
     request.postpath = [name]
-    resource = getChildForRequest(WebPort(clock, mock_tracker), request)
-    assert resource.render(request) == NOT_DONE_YET
+    getChildForRequest(WebPort(clock, mock_tracker), request).render(request)
+    # Close the file that a response to GET is being produced from.
+    for registration in request.producers:
+        assert registration is not None
+        cast(StaticProducer, registration[0]).stopProducing()
+
     headers = request.responseHeaders
     assert headers.getRawHeaders(b"cache-control") == [b"max-age=0, private"]
     assert headers.getRawHeaders(b"expires") == [b"-1"]
-
-    # Close the file that the response is being produced from.
-    [registration] = request.producers
-    assert registration is not None
-    cast(StaticProducer, registration[0]).stopProducing()
 
 
 @pytest.mark.parametrize("streaming", [False, True])

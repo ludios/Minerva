@@ -8,7 +8,7 @@ import json
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import IO, cast, override
+from typing import cast, override
 
 import jinja2
 from markupsafe import Markup
@@ -16,7 +16,7 @@ from twisted.web.http import MOVED_PERMANENTLY
 from twisted.web.pages import notFound
 from twisted.web.resource import IResource, Resource
 from twisted.web.server import NOT_DONE_YET, Request
-from twisted.web.static import File, StaticProducer
+from twisted.web.static import File
 
 from minerva.interfaces import Clock, StreamTrackerLike
 from minerva.transport import ServerTransport
@@ -129,26 +129,24 @@ class BetterResource(Resource):
 
 class RevalidatedFile(File):
     """
-    A `File` (or a directory of files) that tells the browser to ask the
-    server whether its cached copy is still current, every time before it
-    uses that copy.
+    A `File` (or a directory of files) whose responses say that they are
+    stale at once (`Cache-Control: max-age=0`).  So a browser that kept a
+    copy asks the server whether the file has changed, before it uses the
+    copy again.
 
-    A plain `File` sends no caching headers, and then a browser may go on
-    using its cached copy for a while after the file changed (for example,
-    an old `minerva-client.js` after the server was upgraded).
+    A plain `File` says nothing about how long a copy stays fresh.  Then a
+    browser guesses, and may go on using its copy for a while after the file
+    changed (for example, an old `minerva-client.js` after the server was
+    upgraded).
     """
 
     @override
-    def makeProducer(
-        self, request: Request, fileForReading: IO[bytes]
-    ) -> StaticProducer:
-        """
-        Set the caching headers, and return the producer that will send the
-        contents of `fileForReading` in response to `request`.
-        """
+    def render(self, request: Request) -> bytes | int:
+        # Set here, not in `makeProducer`, so that the responses without a
+        # body (304 Not Modified, and those to HEAD requests) have them too.
         request.setHeader(b"cache-control", b"max-age=0, private")
         request.setHeader(b"expires", b"-1")
-        return super().makeProducer(request, fileForReading)
+        return super().render(request)
 
 
 def bad_request(request: Request, message: str) -> bytes:
