@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Build Minerva's JavaScript: regenerate js_minerva/deps.js, and compile the
-standalone client (minerva-client.js) and xdrframe.js with Closure Compiler.
+standalone client (minerva-client.js), xdrframe.js, and the demos (into
+src/minerva/demos/static/) with Closure Compiler.
 
 This needs an old Closure Library and Closure Compiler (the JavaScript uses
 APIs that were removed long ago), and a Coreweb checkout:
@@ -14,7 +15,7 @@ APIs that were removed long ago), and a Coreweb checkout:
                            closurebuilder.py and depswriter.py; default: python2
     CLOSURE_COMPILER_JAVA  the command to run Java; default: java
 
-Usage: scripts/build_js.py [deps|compile|all]
+Usage: scripts/build_js.py [deps|compile|demos|all]
 """
 
 import os
@@ -33,8 +34,11 @@ CLOSURE_PYTHON = shlex.split(os.environ.get("CLOSURE_PYTHON", "python2"))
 JAVA = shlex.split(os.environ.get("CLOSURE_COMPILER_JAVA", "java"))
 
 COMPILED = "src/minerva/compiled_client"
+DEMOS_STATIC = "src/minerva/demos/static"
 ROOTS = [f"{COREWEB}/js_coreweb", "js_minerva"]
-EXTERNS = ["js_minerva/externs/standalone-client.js"]
+STANDALONE_EXTERNS = ["js_minerva/externs/standalone-client.js"]
+# For applications that compile the client in with their own code.
+NORMAL_EXTERNS = ["js_minerva/externs/normal-client.js"]
 COMPILER_FLAGS = [
     "--compilation_level=ADVANCED_OPTIMIZATIONS",
     "--warning_level=VERBOSE",
@@ -84,7 +88,10 @@ def build_deps() -> None:
 
 
 def compile_js(
-    namespaces: list[str], output: str, defines: dict[str, str] | None = None
+    namespaces: list[str],
+    output: str,
+    defines: dict[str, str] | None = None,
+    externs: list[str] = STANDALONE_EXTERNS,
 ) -> None:
     print(f"Compiling {output}")
     closurebuilder = f"{CLOSURE_LIBRARY}/closure/bin/build/closurebuilder.py"
@@ -100,7 +107,7 @@ def compile_js(
     args = [
         *COMPILER_FLAGS,
         *(f"--define={k}={v}" for k, v in (defines or {}).items()),
-        *(f"--externs={e}" for e in EXTERNS),
+        *(f"--externs={e}" for e in externs),
         *(f"--js={root}/deps.js" for root in ROOTS),
         *(f"--js={source}" for source in sources),
     ]
@@ -128,15 +135,23 @@ def build_compiled() -> None:
     )
 
 
+def build_demos() -> None:
+    for demo in ["whiteboard"]:
+        compile_js([demo], f"{DEMOS_STATIC}/{demo}.js", externs=NORMAL_EXTERNS)
+
+
 def main() -> None:
     match sys.argv[1:]:
         case [] | ["all"]:
             build_deps()
             build_compiled()
+            build_demos()
         case ["deps"]:
             build_deps()
         case ["compile"]:
             build_compiled()
+        case ["demos"]:
+            build_demos()
         case _:
             sys.exit(__doc__)
 

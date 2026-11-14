@@ -1,6 +1,7 @@
 """
 `minerva-site`, Minerva's development server.  It serves the in-browser
-JavaScript tests, the chat demo, and a few other test pages and resources.
+JavaScript tests, the demos (see `minerva.demos`), and a few other test pages
+and resources.
 
     uv run minerva-site --http tcp:8111:interface=127.0.0.1 --minerva tcp:8112
 
@@ -30,6 +31,7 @@ from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET, Request, Site
 from twisted.web.static import File
 
+from minerva.demos.whiteboard import WhiteboardFactory
 from minerva.interfaces import Clock, StringFactory, StringProtocol
 from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import ServerTransportFactory
@@ -37,6 +39,7 @@ from minerva.web import (
     PACKAGE_DIR,
     WebPort,
     bad_request,
+    file_digest,
     htmldumps,
     put_child,
     templates,
@@ -187,6 +190,48 @@ class DumbTestPage(Resource):
     def render_GET(self, request: Request) -> bytes:
         return _render_template(
             request, "dumbtest/dumbtest.html", main_socket_port=self._main_socket_port
+        )
+
+
+DEMOS_STATIC_DIR = PACKAGE_DIR / "demos" / "static"
+
+
+def demos_static_href(name: str) -> str:
+    """
+    The URL of the demos' static file `name`, with a cache breaker.
+    """
+    return f"/demos_static/{name}?cb={file_digest(DEMOS_STATIC_DIR / name)}"
+
+
+class DemoPage(Resource):
+    """
+    A demo's page (see `minerva.demos`).  With `dev_mode`, it loads the
+    uncompiled JavaScript.
+    """
+
+    isLeaf = True
+
+    def __init__(
+        self,
+        template: str,
+        domain: str | None,
+        main_socket_port: int | None,
+        dev_mode: bool,
+    ) -> None:
+        super().__init__()
+        self._template = template
+        self._variables = {
+            "domain": domain,
+            "main_socket_port": main_socket_port,
+            "dev_mode": dev_mode,
+        }
+
+    def render_GET(self, request: Request) -> bytes:
+        return _render_template(
+            request,
+            self._template,
+            static_href=demos_static_href,
+            **self._variables,
         )
 
 
@@ -418,6 +463,15 @@ def make_site(
     put_child(root, b"_minerva", WebPort(clock, stream_tracker, allowed_domains))
     put_child(root, b"chatapp", ChatAppPage(domain, main_socket_port))
     put_child(root, b"dumbtest", DumbTestPage(main_socket_port))
+    demos = [(b"whiteboard", "demos/whiteboard.html")]
+    for path, template in demos:
+        for dev_mode in [False, True]:
+            put_child(
+                root,
+                path + (b"_dev" if dev_mode else b""),
+                DemoPage(template, domain, main_socket_port, dev_mode),
+            )
+    put_child(root, b"demos_static", static(DEMOS_STATIC_DIR))
     put_child(root, b"wait_resource", WaitResource(clock))
     put_child(root, b"form_sandbox", FormSandbox())
     if (docs := _REPO_DIR / "docs").is_dir():
@@ -535,7 +589,8 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
 async def serve(reactor: IReactorCore, args: argparse.Namespace) -> None:
     # Every reactor provides the `Clock` protocol.
     clock: Clock = reactor
-    tracker = StreamTracker(clock, DemoFactory(clock))
+    subfactories = {"whiteboard": WhiteboardFactory(clock)}
+    tracker = StreamTracker(clock, DemoFactory(clock, subfactories))
     socket_factory = ServerTransportFactory(clock, tracker)
 
     socket_ports = []

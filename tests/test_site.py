@@ -17,6 +17,7 @@ from twisted.web.server import NOT_DONE_YET
 from twisted.web.static import File
 
 from minerva.site import (
+    DEMOS_STATIC_DIR,
     DemoFactory,
     DemoProtocol,
     WaitResource,
@@ -27,6 +28,7 @@ from minerva.site import (
     restricted_string_alphabet,
 )
 from minerva.stream import ServerStream, StreamTracker
+from minerva.web import file_digest
 from tests.mocks import DummySocketLikeTransport, FakeRequest, MockStringFactory
 
 
@@ -219,6 +221,35 @@ class TestSite:
     def test_dumbtest(self, root: Resource) -> None:
         _, request = self.get(root, b"/dumbtest/")
         assert "__demo_mainSocketPort = 8112;" in request.written_bytes().decode()
+
+    @pytest.mark.parametrize(
+        ("path", "script"),
+        [
+            (b"/whiteboard/", "/demos_static/whiteboard.js?cb="),
+            (b"/whiteboard_dev/", "goog.require('whiteboard');"),
+        ],
+    )
+    def test_demos(self, root: Resource, path: bytes, script: str) -> None:
+        _, request = self.get(root, path)
+        page = request.written_bytes().decode()
+        assert '__demo_shared_domain = "example.com";' in page
+        assert "__demo_mainSocketPort = 8112;" in page
+        assert script in page
+        assert ("/closure-library/" in page) == path.endswith(b"_dev/")
+
+    def test_demos_static(self, root: Resource) -> None:
+        _, request = self.get(root, b"/whiteboard/")
+        digest = file_digest(DEMOS_STATIC_DIR / "whiteboard.css")
+        assert (
+            f"/demos_static/whiteboard.css?cb={digest}"
+            in request.written_bytes().decode()
+        )
+
+        request = FakeRequest()
+        request.postpath = [b"demos_static", b"whiteboard.css"]
+        resource = getChildForRequest(root, request)
+        assert isinstance(resource, File)
+        assert resource.path == str(DEMOS_STATIC_DIR / "whiteboard.css")
 
     def test_endpoint_info(self, root: Resource) -> None:
         _, request = self.get(root, b"/@testres_Minerva/GetEndpointInfo/")

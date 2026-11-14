@@ -1,0 +1,311 @@
+/*
+ * Copyright 2009 The Closure Library Authors. All Rights Reserved.
+ *
+ * Use of this source code is governed by an Apache 2.0 License.
+ * See the COPYING file for details.
+ */
+/*
+ * Cross-browser implementation of the "display: inline-block" CSS property.
+ * See http://www.w3.org/TR/CSS21/visuren.html#propdef-display for details.
+ * Tested on IE 6 & 7, FF 1.5 & 2.0, Safari 2 & 3, Webkit, and Opera 9.
+ *
+ * @author attila@google.com (Attila Bodis)
+ */
+/*
+ * Default rule; only Safari, Webkit, and Opera handle it without hacks.
+ */
+.goog-inline-block {
+  position: relative;
+  display: -moz-inline-box;
+  /* Ignored by FF3 and later. */
+  display: inline-block; }
+
+/*
+ * Pre-IE7 IE hack.	On IE, "display: inline-block" only gives the element
+ * layout, but doesn't give it inline behavior.	Subsequently setting display
+ * to inline does the trick.
+ */
+* html .goog-inline-block {
+  display: inline; }
+
+/*
+ * IE7-only hack.	On IE, "display: inline-block" only gives the element
+ * layout, but doesn't give it inline behavior.	Subsequently setting display
+ * to inline does the trick.
+ */
+*:first-child + html .goog-inline-block {
+  display: inline; }
+
+/*
+ * Copyright 2009 The Closure Library Authors. All Rights Reserved.
+ *
+ * Use of this source code is governed by an Apache 2.0 License.
+ * See the COPYING file for details.
+ */
+/*
+ * Standard styling for palettes created by goog.ui.PaletteRenderer.
+ *
+ * @author pupius@google.com (Daniel Pupius)
+ * @author attila@google.com (Attila Bodis)
+ */
+.goog-palette {
+  cursor: default;
+  outline: none; }
+
+.goog-palette-table {
+  border: 1px solid #666;
+  border-collapse: collapse;
+  margin: 5px; }
+
+.goog-palette-cell {
+  border: 0;
+  /*border-right: 1px solid #666;*/
+  cursor: pointer;
+  height: 18px;
+  margin: 0;
+  text-align: center;
+  vertical-align: middle;
+  width: 18px; }
+
+.goog-palette-colorswatch {
+  position: relative;
+  height: 18px;
+  width: 18px;
+  font-size: x-small; }
+
+.goog-palette-cell-hover .goog-palette-colorswatch {
+  height: 16px;
+  width: 16px;
+  border: 1px solid #FFF; }
+
+.goog-palette-cell-selected .goog-palette-colorswatch {
+  height: 16px;
+  width: 16px;
+  border: 1px solid #333;
+  color: #fff;
+  font-weight: bold;
+  background-image: url(color-swatch-tick.gif);
+  background-repeat: no-repeat;
+  background-position: center center; }
+
+.goog-palette-customcolor {
+  position: relative;
+  height: 16px;
+  width: 16px;
+  font-size: x-small;
+  background-color: #FAFAFA;
+  color: #666;
+  border: 1px solid #EEE; }
+
+.goog-palette-cell-hover .goog-palette-customcolor {
+  background-color: #FEE;
+  border: 1px solid #F66;
+  color: #F66; }
+
+/*
+ * Copyright 2009 The Closure Library Authors. All Rights Reserved.
+ *
+ * Use of this source code is governed by an Apache 2.0 License.
+ * See the COPYING file for details.
+ */
+/*
+ * Styling for custom buttons rendered by goog.ui.CustomButtonRenderer.
+ *
+ * @author attila@google.com (Attila Bodis)
+ */
+.goog-custom-button {
+  margin: 2px;
+  border: 0;
+  padding: 0;
+  font-family: Arial, sans-serif;
+  color: #000;
+  /* Client apps may override the URL at which they serve the image. */
+  background: #dddddd url(button-bg.gif) repeat-x top left;
+  text-decoration: none;
+  list-style: none;
+  vertical-align: middle;
+  cursor: default;
+  outline: none; }
+
+/* Pseudo-rounded corners. */
+.goog-custom-button-outer-box,
+.goog-custom-button-inner-box {
+  border-style: solid;
+  border-color: #aaa;
+  vertical-align: top; }
+
+.goog-custom-button-outer-box {
+  margin: 0;
+  border-width: 1px 0;
+  padding: 0; }
+
+.goog-custom-button-inner-box {
+  /* By default in FF2, block elements inside a moz-inline-box are stacked
+   * horizontally next to each other.	This stops that weird behavior. */
+  -moz-box-orient: vertical;
+  margin: 0 -1px;
+  border-width: 0 1px;
+  padding: 3px 4px;
+  white-space: nowrap;
+  /* Prevents buttons from line breaking on android. */ }
+
+/* Pre-IE7 IE hack; ignored by IE7 and all non-IE browsers. */
+* html .goog-custom-button-inner-box {
+  /* IE6 needs to have the box shifted to make the borders line up. */
+  left: -1px; }
+
+/* Pre-IE7 BiDi fixes. */
+* html .goog-custom-button-rtl .goog-custom-button-outer-box {
+  /* @noflip */
+  left: -1px; }
+
+* html .goog-custom-button-rtl .goog-custom-button-inner-box {
+  /* @noflip */
+  right: auto; }
+
+/* IE7-only hack; ignored by all other browsers. */
+*:first-child + html .goog-custom-button-inner-box {
+  /* IE7 needs to have the box shifted to make the borders line up. */
+  left: -1px; }
+
+/* IE7 BiDi fix. */
+*:first-child + html .goog-custom-button-rtl .goog-custom-button-inner-box {
+  /* @noflip */
+  left: 1px; }
+
+/* Safari-only hacks. */
+::root .goog-custom-button,
+::root .goog-custom-button-outer-box {
+  /* Required to make pseudo-rounded corners work on Safari. */
+  line-height: 0; }
+
+::root .goog-custom-button-inner-box {
+  /* Required to make pseudo-rounded corners work on Safari. */
+  line-height: normal; }
+
+/* State: disabled. */
+.goog-custom-button-disabled {
+  background-image: none !important;
+  opacity: 0.3;
+  -moz-opacity: 0.3;
+  filter: alpha(opacity=30); }
+
+.goog-custom-button-disabled .goog-custom-button-outer-box,
+.goog-custom-button-disabled .goog-custom-button-inner-box {
+  color: #333 !important;
+  border-color: #999 !important; }
+
+/* Pre-IE7 IE hack; ignored by IE7 and all non-IE browsers. */
+* html .goog-custom-button-disabled {
+  margin: 2px 1px !important;
+  padding: 0 1px !important; }
+
+/* IE7-only hack; ignored by all other browsers. */
+*:first-child + html .goog-custom-button-disabled {
+  margin: 2px 1px !important;
+  padding: 0 1px !important; }
+
+/* State: hover. */
+.goog-custom-button-hover .goog-custom-button-outer-box,
+.goog-custom-button-hover .goog-custom-button-inner-box {
+  border-color: #9cf #69e #69e #7af !important;
+  /* Hover border wins. */ }
+
+/* State: active, checked. */
+.goog-custom-button-active,
+.goog-custom-button-checked {
+  background-color: #bbb;
+  background-position: bottom left; }
+
+/* State: focused. */
+.goog-custom-button-focused .goog-custom-button-outer-box,
+.goog-custom-button-focused .goog-custom-button-inner-box {
+  border-color: orange; }
+
+/* Pill (collapsed border) styles. */
+.goog-custom-button-collapse-right,
+.goog-custom-button-collapse-right .goog-custom-button-outer-box,
+.goog-custom-button-collapse-right .goog-custom-button-inner-box {
+  margin-right: 0; }
+
+.goog-custom-button-collapse-left,
+.goog-custom-button-collapse-left .goog-custom-button-outer-box,
+.goog-custom-button-collapse-left .goog-custom-button-inner-box {
+  margin-left: 0; }
+
+.goog-custom-button-collapse-left .goog-custom-button-inner-box {
+  border-left: 1px solid #fff; }
+
+.goog-custom-button-collapse-left.goog-custom-button-checked
+.goog-custom-button-inner-box {
+  border-left: 1px solid #ddd; }
+
+/* Pre-IE7 IE hack; ignored by IE7 and all non-IE browsers. */
+* html .goog-custom-button-collapse-left .goog-custom-button-inner-box {
+  left: 0; }
+
+/* IE7-only hack; ignored by all other browsers. */
+*:first-child + html .goog-custom-button-collapse-left
+.goog-custom-button-inner-box {
+  left: 0; }
+
+* {
+  font-family: Verdana, sans-serif;
+  font-size: 13px; }
+
+pre, code {
+  font-family: Consolas, monospace;
+  font-size: 0.8em; }
+
+body, html {
+  background-color: #eee; }
+
+#whiteboard {
+  width: 800px; }
+
+.clearer {
+  clear: both; }
+
+#whiteboard-controls-left {
+  float: left; }
+
+#whiteboard-controls-right {
+  float: right; }
+
+#whiteboard-controls-left * {
+  vertical-align: top; }
+
+#whiteboard-cp-value {
+  width: 148px;
+  height: 54px;
+  line-height: 54px;
+  /* to vertically center */
+  border: 1px solid #666;
+  margin: 5px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 20px;
+  font-weight: bold;
+  text-align: center; }
+
+#drawAreaContainer {
+  border: 2px solid #aaa;
+  border-radius: 5px;
+  -moz-border-radius: 5px;
+  -webkit-border-radius: 5px;
+  /* float just to constrain width */
+  float: left;
+  margin-bottom: 9px; }
+
+#drawAreaOverlay {
+  width: 800px;
+  height: 600px;
+  position: absolute;
+  z-index: 2; }
+
+#drawArea {
+  position: relative;
+  width: 800px;
+  height: 600px; }
+
+#log {
+  clear: both; }
