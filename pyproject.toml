@@ -31,6 +31,11 @@ Source = "https://github.com/ludios/Minerva"
 [project.scripts]
 minerva-site = "minerva.site:main"
 
+[project.optional-dependencies]
+demos = [
+    "twisted[tls,websocket]>=26.4",
+]
+
 [dependency-groups]
 dev = [
     "coverage>=7.10",
@@ -39,6 +44,7 @@ dev = [
     "pytest>=9.0",
     "ruff>=0.17",
     "ty>=0.0.89",
+    "twisted[tls,websocket]>=26.4",
 ]
 
 [build-system]
@@ -87,7 +93,9 @@ ignore = [
 # that Minerva itself owns is snake_case.
 extend-ignore-names = [
     "abortConnection",
+    "addSystemEventTrigger",
     "buildProtocol",
+    "bytesMessageReceived",
     "callLater",
     "connectionLost",
     "connectionMade",
@@ -96,7 +104,10 @@ extend-ignore-names = [
     "getHost",
     "isLeaf",
     "makeConnection",
+    "negotiationFinished",
+    "negotiationStarted",
     "pauseProducing",
+    "pongReceived",
     "registerProducer",
     "requestHeaders",
     "render_GET",
@@ -105,6 +116,7 @@ extend-ignore-names = [
     "resumeProducing",
     "setTcpNoDelay",
     "stopProducing",
+    "textMessageReceived",
     "unregisterProducer",
 ]
 

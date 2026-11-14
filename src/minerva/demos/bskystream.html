@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Bluesky stream demo{{ " (dev)" if dev_mode else "" }} | Minerva</title>
+	<link rel="stylesheet" type="text/css" href="{{ static_href('bskystream.css') }}">
+</head>
+<body>
+
+<div id="demo-header">
+	<div id="demo-header-text">
+		<b><a href="/">minerva_site</a></b> | <b>Bluesky stream: a sample of new public posts</b>
+
+		<p>
+			This is unmoderated.  If you don't want to see any objectionable text or links, <a href="/">navigate away now</a>.
+			Posts come from Bluesky's <a href="https://bsky.network/docs/jetstream/">Jetstream</a>, without replies,
+			posts that their authors labeled, or posts by authors who asked not to be shown to logged-out viewers.
+		</p>
+
+		<p>
+			See the <a href="https://github.com/ludios/Minerva/blob/master/src/minerva/demos/bskystream.py">Python</a>,
+			<a href="https://github.com/ludios/Minerva/blob/master/js_minerva/demos/bskystream.js">JavaScript</a>, and
+			<a href="https://github.com/ludios/Minerva/blob/master/src/minerva/demos/bskystream.html">HTML source</a> for this demo.
+			{% if dev_mode %}
+			This page supports options ?mode=http, ?mode=flash, ?useSubdomains=0, ?useSubdomains=1,
+			?httpStreaming=1, ?logging=1 (which can be combined).
+			{% endif %}
+		</p>
+
+		<div id="prefs">
+			<label class="pref-label">
+				Language:
+				<select id="language">
+					<option value="">All</option>
+					<option value="en">English</option>
+					<option value="ja">Japanese</option>
+					<option value="pt">Portuguese</option>
+					<option value="de">German</option>
+					<option value="es">Spanish</option>
+					<option value="ko">Korean</option>
+					<option value="fr">French</option>
+					<option value="it">Italian</option>
+					<option value="nl">Dutch</option>
+					<option value="ru">Russian</option>
+					<option value="uk">Ukrainian</option>
+					<option value="zh">Chinese</option>
+				</select>
+			</label>
+
+			<label class="pref-label">
+				<input type="checkbox" id="automatic_scroll" checked> Automatic scroll
+			</label>
+		</div>
+
+		{% if not extra_installed %}
+		<p id="bskystream-unavailable" class="important-message">
+			This demo needs Minerva's <code>demos</code> extra: install it with
+			<code>uv sync --extra demos</code> or <code>pip install 'minerva[demos]'</code>,
+			and restart minerva-site.
+		</p>
+		{% endif %}
+	</div>
+</div>
+
+<div id="minerva-elements"></div>
+<div id="bskystream-container"></div>
+<div id="log"></div>
+
+{% if extra_installed %}
+<script>
+// In minerva-site, user specifies this with the command-line --domain option
+__demo_shared_domain = {{ htmldumps(domain) }};
+// document.domain must be set before JavaScript objects are created, or
+// else IE will become confused and spew "Access is denied" errors.
+if(__demo_shared_domain) {
+	document.domain = __demo_shared_domain;
+}
+
+__demo_mainSocketPort = {{ htmldumps(main_socket_port) }};
+
+// Without ?mode=, cw.net.demo would use Flash, which browsers no longer run.
+if(!/[?&]mode=/.test(location.search)) {
+	history.replaceState(null, '', (location.search ? location.search + '&' : '?') + 'mode=http');
+}
+</script>
+
+{% if dev_mode %}
+<script src="/closure-library/closure/goog/base.js"></script>
+<script src="/js_coreweb/deps.js"></script>
+<script src="/js_minerva/deps.js"></script>
+<script>
+goog.require('bskystream');
+</script>
+{% else %}
+<script src="{{ static_href('bskystream.js') }}"></script>
+{% endif %}
+<script>
+__bskystream_init();
+</script>
+{% endif %}
+
+</body>
+</html>

@@ -1,0 +1,246 @@
+/*
+ * Copyright 2009 The Closure Library Authors. All Rights Reserved.
+ *
+ * Use of this source code is governed by an Apache 2.0 License.
+ * See the COPYING file for details.
+ */
+/*
+ * Cross-browser implementation of the "display: inline-block" CSS property.
+ * See http://www.w3.org/TR/CSS21/visuren.html#propdef-display for details.
+ * Tested on IE 6 & 7, FF 1.5 & 2.0, Safari 2 & 3, Webkit, and Opera 9.
+ *
+ * @author attila@google.com (Attila Bodis)
+ */
+/*
+ * Default rule; only Safari, Webkit, and Opera handle it without hacks.
+ */
+.goog-inline-block {
+  position: relative;
+  display: -moz-inline-box;
+  /* Ignored by FF3 and later. */
+  display: inline-block; }
+
+/*
+ * Pre-IE7 IE hack.	On IE, "display: inline-block" only gives the element
+ * layout, but doesn't give it inline behavior.	Subsequently setting display
+ * to inline does the trick.
+ */
+* html .goog-inline-block {
+  display: inline; }
+
+/*
+ * IE7-only hack.	On IE, "display: inline-block" only gives the element
+ * layout, but doesn't give it inline behavior.	Subsequently setting display
+ * to inline does the trick.
+ */
+*:first-child + html .goog-inline-block {
+  display: inline; }
+
+/*
+ * Copyright 2009 The Closure Library Authors. All Rights Reserved.
+ *
+ * Use of this source code is governed by an Apache 2.0 License.
+ * See the COPYING file for details.
+ */
+/*
+ * Styling for custom buttons rendered by goog.ui.CustomButtonRenderer.
+ *
+ * @author attila@google.com (Attila Bodis)
+ */
+.goog-custom-button {
+  margin: 2px;
+  border: 0;
+  padding: 0;
+  font-family: Arial, sans-serif;
+  color: #000;
+  /* Client apps may override the URL at which they serve the image. */
+  background: #dddddd url(button-bg.gif) repeat-x top left;
+  text-decoration: none;
+  list-style: none;
+  vertical-align: middle;
+  cursor: default;
+  outline: none; }
+
+/* Pseudo-rounded corners. */
+.goog-custom-button-outer-box,
+.goog-custom-button-inner-box {
+  border-style: solid;
+  border-color: #aaa;
+  vertical-align: top; }
+
+.goog-custom-button-outer-box {
+  margin: 0;
+  border-width: 1px 0;
+  padding: 0; }
+
+.goog-custom-button-inner-box {
+  /* By default in FF2, block elements inside a moz-inline-box are stacked
+   * horizontally next to each other.	This stops that weird behavior. */
+  -moz-box-orient: vertical;
+  margin: 0 -1px;
+  border-width: 0 1px;
+  padding: 3px 4px;
+  white-space: nowrap;
+  /* Prevents buttons from line breaking on android. */ }
+
+/* Pre-IE7 IE hack; ignored by IE7 and all non-IE browsers. */
+* html .goog-custom-button-inner-box {
+  /* IE6 needs to have the box shifted to make the borders line up. */
+  left: -1px; }
+
+/* Pre-IE7 BiDi fixes. */
+* html .goog-custom-button-rtl .goog-custom-button-outer-box {
+  /* @noflip */
+  left: -1px; }
+
+* html .goog-custom-button-rtl .goog-custom-button-inner-box {
+  /* @noflip */
+  right: auto; }
+
+/* IE7-only hack; ignored by all other browsers. */
+*:first-child + html .goog-custom-button-inner-box {
+  /* IE7 needs to have the box shifted to make the borders line up. */
+  left: -1px; }
+
+/* IE7 BiDi fix. */
+*:first-child + html .goog-custom-button-rtl .goog-custom-button-inner-box {
+  /* @noflip */
+  left: 1px; }
+
+/* Safari-only hacks. */
+::root .goog-custom-button,
+::root .goog-custom-button-outer-box {
+  /* Required to make pseudo-rounded corners work on Safari. */
+  line-height: 0; }
+
+::root .goog-custom-button-inner-box {
+  /* Required to make pseudo-rounded corners work on Safari. */
+  line-height: normal; }
+
+/* State: disabled. */
+.goog-custom-button-disabled {
+  background-image: none !important;
+  opacity: 0.3;
+  -moz-opacity: 0.3;
+  filter: alpha(opacity=30); }
+
+.goog-custom-button-disabled .goog-custom-button-outer-box,
+.goog-custom-button-disabled .goog-custom-button-inner-box {
+  color: #333 !important;
+  border-color: #999 !important; }
+
+/* Pre-IE7 IE hack; ignored by IE7 and all non-IE browsers. */
+* html .goog-custom-button-disabled {
+  margin: 2px 1px !important;
+  padding: 0 1px !important; }
+
+/* IE7-only hack; ignored by all other browsers. */
+*:first-child + html .goog-custom-button-disabled {
+  margin: 2px 1px !important;
+  padding: 0 1px !important; }
+
+/* State: hover. */
+.goog-custom-button-hover .goog-custom-button-outer-box,
+.goog-custom-button-hover .goog-custom-button-inner-box {
+  border-color: #9cf #69e #69e #7af !important;
+  /* Hover border wins. */ }
+
+/* State: active, checked. */
+.goog-custom-button-active,
+.goog-custom-button-checked {
+  background-color: #bbb;
+  background-position: bottom left; }
+
+/* State: focused. */
+.goog-custom-button-focused .goog-custom-button-outer-box,
+.goog-custom-button-focused .goog-custom-button-inner-box {
+  border-color: orange; }
+
+/* Pill (collapsed border) styles. */
+.goog-custom-button-collapse-right,
+.goog-custom-button-collapse-right .goog-custom-button-outer-box,
+.goog-custom-button-collapse-right .goog-custom-button-inner-box {
+  margin-right: 0; }
+
+.goog-custom-button-collapse-left,
+.goog-custom-button-collapse-left .goog-custom-button-outer-box,
+.goog-custom-button-collapse-left .goog-custom-button-inner-box {
+  margin-left: 0; }
+
+.goog-custom-button-collapse-left .goog-custom-button-inner-box {
+  border-left: 1px solid #fff; }
+
+.goog-custom-button-collapse-left.goog-custom-button-checked
+.goog-custom-button-inner-box {
+  border-left: 1px solid #ddd; }
+
+/* Pre-IE7 IE hack; ignored by IE7 and all non-IE browsers. */
+* html .goog-custom-button-collapse-left .goog-custom-button-inner-box {
+  left: 0; }
+
+/* IE7-only hack; ignored by all other browsers. */
+*:first-child + html .goog-custom-button-collapse-left
+.goog-custom-button-inner-box {
+  left: 0; }
+
+
+/* The Bluesky stream demo; above are Closure Library's styles. */
+
+* {
+  font-family: Tahoma, Arial, Verdana, sans-serif;
+  font-size: 13px; }
+
+a {
+  color: #48779b; }
+
+body, html {
+  margin: 0;
+  padding: 0;
+  background-color: #fff; }
+
+#demo-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-bottom: 1px solid #ccc;
+  /* Needed because it's fixed, and hovers over the posts. */
+  background-color: #fff;
+  z-index: 1; }
+
+#demo-header-text {
+  padding: 0.8em 0.8em 0.4em 0.8em; }
+
+#demo-header p {
+  margin: 0.4em 0; }
+
+.pref-label {
+  border: 1px solid #ccc;
+  background-color: #eee;
+  padding: 3px;
+  margin: 1px 0.75em 1px 1px; }
+
+.clear-posts-button {
+  position: relative;
+  top: -2px; }
+
+.row-even, .row-odd {
+  padding: 3px 4px; }
+
+.row-even {
+  background-color: #e5eef5; }
+
+.row-odd {
+  background-color: #f7f7f7; }
+
+.post-author {
+  font-weight: bold; }
+
+.post-langs, .post-media {
+  color: #888; }
+
+.important-message {
+  font-weight: bold; }
+
+#log {
+  clear: both; }

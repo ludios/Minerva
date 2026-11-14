@@ -16,6 +16,7 @@ from twisted.web.resource import Resource, getChildForRequest
 from twisted.web.server import NOT_DONE_YET
 from twisted.web.static import File
 
+from minerva.demos import bskystream
 from minerva.site import (
     DEMOS_STATIC_DIR,
     DemoFactory,
@@ -166,25 +167,39 @@ class TestParseArgs:
         assert args.http == ["tcp:1", "tcp:2"]
         assert args.minerva == ["tcp:3"]
 
+    def test_bluesky(self) -> None:
+        args = parse_args(["--http", "tcp:8111"])
+        assert args.jetstream == "wss://jetstream.us-east.bsky.network"
+        assert args.bluesky_appview == "https://public.api.bsky.app"
+        jetstream = ["--jetstream", "ws://localhost:6008"]
+        appview = ["--bluesky-appview", "http://localhost:2584"]
+        args = parse_args(["--http", "tcp:8111", *jetstream, *appview])
+        assert args.jetstream == "ws://localhost:6008"
+        assert args.bluesky_appview == "http://localhost:2584"
+
     def test_needs_a_server(self, capsys: pytest.CaptureFixture[str]) -> None:
         with pytest.raises(SystemExit):
             parse_args([])
         assert "start at least one" in capsys.readouterr().err
 
 
+def make_root(clock: Clock, tmp_path: Path) -> Resource:
+    tracker = StreamTracker(clock, DemoFactory(clock), inactive_check_interval=None)
+    site = make_site(
+        clock,
+        tracker,
+        domain="example.com",
+        main_socket_port=8112,
+        closure_library=tmp_path / "closure-library",
+        coreweb=tmp_path / "Coreweb",
+    )
+    return site.resource
+
+
 class TestSite:
     @pytest.fixture
     def root(self, clock: Clock, tmp_path: Path) -> Resource:
-        tracker = StreamTracker(clock, DemoFactory(clock), inactive_check_interval=None)
-        site = make_site(
-            clock,
-            tracker,
-            domain="example.com",
-            main_socket_port=8112,
-            closure_library=tmp_path / "closure-library",
-            coreweb=tmp_path / "Coreweb",
-        )
-        return site.resource
+        return make_root(clock, tmp_path)
 
     def get(
         self, root: Resource, path: bytes, **args: bytes
@@ -227,6 +242,8 @@ class TestSite:
         [
             (b"/whiteboard/", "/demos_static/whiteboard.js?cb="),
             (b"/whiteboard_dev/", "goog.require('whiteboard');"),
+            (b"/bluesky-stream/", "/demos_static/bskystream.js?cb="),
+            (b"/bluesky-stream_dev/", "goog.require('bskystream');"),
         ],
     )
     def test_demos(self, root: Resource, path: bytes, script: str) -> None:
@@ -236,6 +253,16 @@ class TestSite:
         assert "__demo_mainSocketPort = 8112;" in page
         assert script in page
         assert ("/closure-library/" in page) == path.endswith(b"_dev/")
+
+    def test_bluesky_stream_without_the_extra(
+        self, clock: Clock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(bskystream, "extra_installed", lambda: False)
+        _, request = self.get(make_root(clock, tmp_path), b"/bluesky-stream/")
+        page = request.written_bytes().decode()
+        assert "bskystream-unavailable" in page
+        assert "/demos_static/bskystream.js" not in page
+        assert "__bskystream_init();" not in page
 
     def test_demos_static(self, root: Resource) -> None:
         _, request = self.get(root, b"/whiteboard/")

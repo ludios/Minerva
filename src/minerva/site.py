@@ -15,15 +15,15 @@ import html
 import json
 import logging
 import textwrap
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import NoReturn, cast, override
+from typing import NoReturn, Protocol, cast, override
 
 from twisted.internet import task
 from twisted.internet.address import IPv4Address, IPv6Address
 from twisted.internet.defer import Deferred
 from twisted.internet.endpoints import serverFromString
-from twisted.internet.interfaces import IReactorCore
+from twisted.internet.interfaces import IReactorCore, IReactorTCP
 from twisted.logger import ILogObserver, STDLibLogObserver, globalLogBeginner
 from twisted.python.failure import Failure
 from twisted.web.http import HTTPChannel
@@ -31,6 +31,7 @@ from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET, Request, Site
 from twisted.web.static import File
 
+from minerva.demos import bskystream
 from minerva.demos.whiteboard import WhiteboardFactory
 from minerva.interfaces import Clock, StringFactory, StringProtocol
 from minerva.stream import ServerStream, StreamTracker
@@ -217,10 +218,11 @@ class DemoPage(Resource):
         domain: str | None,
         main_socket_port: int | None,
         dev_mode: bool,
+        **variables: object,
     ) -> None:
         super().__init__()
         self._template = template
-        self._variables = {
+        self._variables = variables | {
             "domain": domain,
             "main_socket_port": main_socket_port,
             "dev_mode": dev_mode,
@@ -463,13 +465,20 @@ def make_site(
     put_child(root, b"_minerva", WebPort(clock, stream_tracker, allowed_domains))
     put_child(root, b"chatapp", ChatAppPage(domain, main_socket_port))
     put_child(root, b"dumbtest", DumbTestPage(main_socket_port))
-    demos = [(b"whiteboard", "demos/whiteboard.html")]
-    for path, template in demos:
+    demos = [
+        (b"whiteboard", "demos/whiteboard.html", {}),
+        (
+            b"bluesky-stream",
+            "demos/bskystream.html",
+            {"extra_installed": bskystream.extra_installed()},
+        ),
+    ]
+    for path, template, variables in demos:
         for dev_mode in [False, True]:
             put_child(
                 root,
                 path + (b"_dev" if dev_mode else b""),
-                DemoPage(template, domain, main_socket_port, dev_mode),
+                DemoPage(template, domain, main_socket_port, dev_mode, **variables),
             )
     put_child(root, b"demos_static", static(DEMOS_STATIC_DIR))
     put_child(root, b"wait_resource", WaitResource(clock))
@@ -549,6 +558,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="the path to a Coreweb checkout (default: %(default)s)",
     )
     parser.add_argument(
+        "--jetstream",
+        default=bskystream.JETSTREAM,
+        metavar="URL",
+        help="the Bluesky Jetstream for the Bluesky stream demo (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--bluesky-appview",
+        default=bskystream.APPVIEW,
+        metavar="URL",
+        help=(
+            "the Bluesky AppView that the Bluesky stream demo looks up "
+            "profiles with (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "-n",
         "--no-tracebacks",
         action="store_true",
@@ -584,12 +608,37 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
             f"Could not find Coreweb at {args.coreweb}.  Pages that use the "
             "uncompiled JavaScript will be broken; pass --coreweb."
         )
+    if not bskystream.extra_installed():
+        _warn(
+            "The Bluesky stream demo needs Minerva's `demos` extra; install it "
+            "with `uv sync --extra demos` or `pip install 'minerva[demos]'`."
+        )
+
+
+class _SystemEvents(Protocol):
+    """
+    The part of `IReactorCore` that `serve` uses, for type checkers that (like
+    ty) don't understand zope.interface.
+    """
+
+    def addSystemEventTrigger(
+        self, phase: str, event_type: str, callable: Callable[[], object], /
+    ) -> object: ...
 
 
 async def serve(reactor: IReactorCore, args: argparse.Namespace) -> None:
     # Every reactor provides the `Clock` protocol.
     clock: Clock = reactor
-    subfactories = {"whiteboard": WhiteboardFactory(clock)}
+    subfactories: dict[str, StringFactory] = {"whiteboard": WhiteboardFactory(clock)}
+    if bskystream.extra_installed():
+        bsky_factory = bskystream.make_factory(
+            cast(IReactorTCP, reactor), args.jetstream, args.bluesky_appview
+        )
+        # Don't try to reconnect when the reactor drops the connection.
+        cast(_SystemEvents, reactor).addSystemEventTrigger(
+            "before", "shutdown", bsky_factory.jetstream.stop
+        )
+        subfactories["bskystream"] = bsky_factory
     tracker = StreamTracker(clock, DemoFactory(clock, subfactories))
     socket_factory = ServerTransportFactory(clock, tracker)
 

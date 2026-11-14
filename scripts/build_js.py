@@ -136,7 +136,7 @@ def build_compiled() -> None:
 
 
 def build_demos() -> None:
-    for demo in ["whiteboard"]:
+    for demo in ["whiteboard", "bskystream"]:
         compile_js([demo], f"{DEMOS_STATIC}/{demo}.js", externs=NORMAL_EXTERNS)
 
 
