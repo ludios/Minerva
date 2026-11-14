@@ -162,6 +162,49 @@ Library.  Suggested order, mirroring how the Python port went:
   inside Twisted's synchronous resumeProducing leaves a stale
   `_primary_has_producer` flag.
 
+## Demos: known problems (from the reviews of 2026-11-14; not fixed)
+
+- Links: docs/website/index.html and both demo pages link to
+  `github.com/ludios/Minerva/.../master/src/minerva/...` and
+  `.../master/js_minerva/demos/...`.  Those paths exist only on `python3`, so
+  the links are 404 until `python3` becomes `master`.
+- Bluesky stream, load on Bluesky's services:
+  - Every post that some viewer wants gets a profile lookup, though each
+    viewer's limiter then drops most of them.
+  - `make_fetch_profiles`'s `Agent` has no persistent pool, so each
+    `getProfiles` batch opens a new TLS connection.
+  - A failing AppView (HTTP 429, say) is asked again with every batch (4/s).
+  - A second post by an author whose lookup is still running starts another
+    lookup.
+  - `JetstreamClient.start()` connects at once, whatever the backoff says:
+    viewers that come and go make it reconnect each time.
+- Bluesky stream, other:
+  - An author who opts out (or gets labeled) is still shown until their
+    cached profile expires (15 minutes).
+  - A trailing slash in `--jetstream` or `--bluesky-appview` makes a
+    `//xrpc/...` path, which both services answer with 404.
+- Whiteboard:
+  - The server doesn't send a point (or ClearBoard) back to its sender, so
+    two viewers who draw and clear at the same moment can end up with
+    different boards.
+  - When the board is full (10,000 points), the sender's page still draws
+    the point that the server ignored.
+  - A point that is added again is sent to the connected viewers again, so
+    their pages can hold more than 10,000 shapes.
+  - whiteboard.css sizes `#whiteboard`, but the page's element is
+    `#whiteboard-container`.
+- Both pages rewrite their URL (`history.replaceState`) to add `mode=http`;
+  making HTTP the default in js_minerva/cw/net/demo/shared.js would fix
+  /chatapp/ too.
+- `DemoProtocol` takes `subprotocol:<name>` after other commands too (a
+  client that sent `begin_chat` first keeps getting chat messages), and
+  duplicates `SubprotocolProtocol`'s dispatch.
+- The checked-in standalone client (src/minerva/compiled_client/) is still
+  the build from 2012 (Coreweb 4f2b7b8, Closure Compiler r2226).  A full
+  `scripts/build_js.py` with today's ../Coreweb (735f263) and
+  compiler-20120917 rewrites it; `scripts/build_js.py deps` and `... demos`
+  leave it alone.
+
 ## Behavior changes (document in README/CHANGES)
 
 - `objcheck`: `ensure_int("0")` raises `TypeError` (was `ValueError`).
@@ -278,7 +321,7 @@ Library.  Suggested order, mirroring how the Python port went:
 - [x] 13. Merged DemosMinerva (2026-10-26; github.com/ludios/DemosMinerva,
       py2, last real change 2012) into `src/minerva/demos/` + `js_minerva/
       demos/`, served by minerva-site (`/whiteboard/`, `/bluesky-stream/`, and
-      `_dev` variants).  History was not merged (mostly "Rebuild JS" commits).
+      `_dev` variants).  History was not merged.
       The LiveJournal stream demo's source (atom.services.livejournal.com) is
       dead, so it became a Bluesky stream: Jetstream v2 over Twisted 26.4's
       `twisted.web.websocket` client (needs the `demos` extra =
@@ -286,9 +329,12 @@ Library.  Suggested order, mirroring how the Python port went:
       self-labeled posts; authors' profiles are batch-checked via
       public.api.bsky.app `getProfiles` (any profile label, incl.
       `!no-unauthenticated`, means don't show); posts are sent in Jetstream
-      order, <= 4/s per viewer.  Twisted's WebSocket `connect()` never fires
-      if TCP drops mid-handshake, so JetstreamClient handles that (and a
-      connect timeout) itself.  The demos' JS compiles with 0 warnings via
+      order, 4/s per viewer on average (bursts of up to 4).  Twisted's
+      WebSocket `connect()` never fires if TCP drops mid-handshake, so
+      JetstreamClient handles that (and a connect timeout) itself; and its
+      `textMessageReceived` gets a message that arrived in several TCP reads
+      in pieces, which JetstreamProtocol puts together.  The demos' JS
+      compiles with 0 warnings via
       `scripts/build_js.py demos`; Googstyle's CSS/images were replaced by the
       compiled CSS + two Closure Library images.  tests/test_demos.py runs both
       demos in headless Chrome (Bluesky against a fake Jetstream/AppView).
