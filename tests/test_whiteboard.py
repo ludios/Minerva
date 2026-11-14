@@ -109,11 +109,12 @@ class TestWhiteboard:
         alice = connect(clock, factory)
         alice.string_received(point(1, 2))
         alice.string_received(point(3, 4, "#000000"))
-        # The same point again doesn't need drawing twice.
+        # A new client draws the same point only once: last, because that
+        # is where the clients that were connected drew it again.
         alice.string_received(point(1, 2))
         assert sent(connect(clock, factory)) == [
-            ["Point", {"x": 1, "y": 2, "color": "#E06666"}],
             ["Point", {"x": 3, "y": 4, "color": "#000000"}],
+            ["Point", {"x": 1, "y": 2, "color": "#E06666"}],
         ]
 
     def test_clear_board(self, clock: Clock, factory: WhiteboardFactory) -> None:

@@ -141,6 +141,9 @@ class WhiteboardFactory:
         if len(self.points) >= self.max_points:
             logger.info("The whiteboard is full; ignoring %r", point)
             return
+        # A point that is drawn again goes to the end, because every client
+        # draws it on top of the points since.
+        self.points.pop(point, None)
         self.points[point] = None
         self._broadcast(point, sender)
         self._cancel_clear_call()
