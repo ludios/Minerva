@@ -137,7 +137,7 @@ DemosMinerva repository):
   Bluesky's [Jetstream](https://bsky.network/docs/jetstream/).  It skips
   replies, posts that their authors labeled, and authors who asked not to be
   shown to logged-out viewers (or who have moderation labels).  It needs the
-  `demos` extra (`pip install 'minerva[demos]'`; `uv sync` installs it).
+  `demos` extra (`uv sync` installs it; with pip, `pip install -e '.[demos]'`).
   It replaced DemosMinerva's stream of public LiveJournal posts, which ended
   with LiveJournal's Atom stream.
 - `chatapp/?mode=http`: a simple chat, mostly for inspecting Minerva's

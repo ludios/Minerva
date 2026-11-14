@@ -55,7 +55,7 @@
 		{% if not extra_installed %}
 		<p id="bskystream-unavailable" class="important-message">
 			This demo needs Minerva's <code>demos</code> extra: install it with
-			<code>uv sync --extra demos</code> or <code>pip install 'minerva[demos]'</code>,
+			<code>uv sync --extra demos</code> or <code>pip install -e '.[demos]'</code>,
 			and restart minerva-site.
 		</p>
 		{% endif %}

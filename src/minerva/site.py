@@ -619,7 +619,7 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
     if not bskystream.extra_installed():
         _warn(
             "The Bluesky stream demo needs Minerva's `demos` extra; install it "
-            "with `uv sync --extra demos` or `pip install 'minerva[demos]'`."
+            "with `uv sync --extra demos` or `pip install -e '.[demos]'`."
         )
 
 
