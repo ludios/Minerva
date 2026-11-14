@@ -3,6 +3,7 @@ Tests for `ServerStream` (with dummy transports) and `StreamTracker`.
 """
 
 import logging
+from typing import Any
 
 import pytest
 from twisted.internet.defer import Deferred
@@ -361,8 +362,30 @@ class _TransportListenerFactory(MockStringFactory):
         return _TransportListener(self, **self._protocol_kwargs)
 
 
-def test_transport_created_and_destroyed(clock: Clock) -> None:
-    factory = _TransportListenerFactory()
+class _Proxy:
+    """
+    Supplies every method of `target` through `__getattr__`.
+    """
+
+    def __init__(self, target: object) -> None:
+        self._target = target
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target, name)
+
+
+class _ProxiedTransportListenerFactory(_TransportListenerFactory):
+    def build_protocol(self) -> Any:
+        return _Proxy(super().build_protocol())
+
+
+@pytest.mark.parametrize(
+    "factory_class", [_TransportListenerFactory, _ProxiedTransportListenerFactory]
+)
+def test_transport_created_and_destroyed(
+    clock: Clock, factory_class: type[_TransportListenerFactory]
+) -> None:
+    factory = factory_class()
     stream = ServerStream(clock, "some fake id", factory)
     t1 = DummySocketLikeTransport(transport_number=1)
     t2 = DummySocketLikeTransport(transport_number=2)

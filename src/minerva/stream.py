@@ -18,8 +18,6 @@ from minerva.interfaces import (
     ServerTransportLike,
     StringFactory,
     StringProtocol,
-    TransportCreatedListener,
-    TransportDestroyedListener,
 )
 from minerva.window import SACK, Incoming, Queue
 
@@ -321,10 +319,13 @@ class ServerStream:
         # the transport caused the stream to start, because that's a nicer
         # abstraction, and it matches the client: there, `stream_started` is
         # called when you call `.start()`.
-        if isinstance(self._protocol, TransportCreatedListener):
+        # The optional methods are looked up with `getattr`, so that a protocol
+        # may also supply them dynamically (a proxy with `__getattr__`, say).
+        transport_created = getattr(self._protocol, "transport_created", None)
+        if transport_created is not None:
             try:
                 # This can do anything to us, including reset or send_string.
-                self._protocol.transport_created(transport.get_info())
+                transport_created(transport.get_info())
             except Exception:
                 logger.exception("transport_created raised an uncaught exception")
             if self.disconnected:
@@ -366,12 +367,11 @@ class ServerStream:
             if self._producer is not None and self._streaming_producer:
                 self._producer.pauseProducing()
 
-        if not self.disconnected and isinstance(
-            self._protocol, TransportDestroyedListener
-        ):
+        transport_destroyed = getattr(self._protocol, "transport_destroyed", None)
+        if not self.disconnected and transport_destroyed is not None:
             try:
                 # This can do anything to us, including reset or send_string.
-                self._protocol.transport_destroyed(transport.get_info())
+                transport_destroyed(transport.get_info())
             except Exception:
                 logger.exception("transport_destroyed raised an uncaught exception")
 
