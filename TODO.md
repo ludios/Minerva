@@ -153,7 +153,11 @@ Library.  Suggested order, mirroring how the Python port went:
 - No global limit on concurrent streams / stream-creation rate.
 - TCP connections are never force-closed after policy file / YouCloseIt, and
   there's no handshake timeout in UNKNOWN mode (existing TODOs in transport.py).
-- QAN: unlimited concurrent peer questions; reset doesn't cancel them.
+- QAN: unlimited concurrent peer questions.  A stream reset cancels the
+  answers that are still being worked out, with one exception: if
+  `body_received` itself resets the stream and then returns a pending
+  Deferred, nothing cancels that Deferred, because the reset ran before
+  `QANHelper` stored it.  (Its late answer is dropped.)
 - ServerStream producer registration: a pull producer that unregisters itself
   inside Twisted's synchronous resumeProducing leaves a stale
   `_primary_has_producer` flag.
