@@ -5,14 +5,12 @@
 
 goog.provide('whiteboard');
 
-goog.require('goog.asserts');
 goog.require('goog.color');
 goog.require('goog.debug.DivConsole');
 goog.require('goog.debug.Logger');
 goog.require('goog.debug.LogManager');
 goog.require('goog.dom');
 goog.require('goog.events');
-goog.require('goog.events.Event');
 goog.require('goog.events.EventType');
 goog.require('goog.events.BrowserEvent');
 goog.require('goog.graphics');
@@ -24,11 +22,9 @@ goog.require('goog.ui.CustomButton');
 goog.require('goog.ui.ColorPalette');
 goog.require('goog.Uri');
 goog.require('cw.eventual');
-goog.require('cw.string');
 goog.require('cw.json');
 goog.require('cw.net.ClientStream');
 goog.require('cw.net.IStringProtocol');
-goog.require('cw.net.HttpStreamingMode');
 goog.require('cw.net.demo.getEndpointByQueryArgs');
 goog.require('cw.repr');
 
@@ -67,10 +63,6 @@ whiteboard.WhiteboardProtocol.prototype.streamReset = function(reasonString, app
  * @param {string} s
  */
 whiteboard.WhiteboardProtocol.prototype.handleString_ = function(s) {
-	function fail() {
-		whiteboard.logger.severe('Could not handle string: ' + cw.repr.repr(s));
-	}
-
 	// TODO: handle errors?
 	var payload = cw.json.parse(s);
 	var msgType = payload[0];
@@ -199,21 +191,6 @@ whiteboard.startStream = function() {
  */
 whiteboard.resetStream = function(reason) {
 	whiteboard.lastProto.reset(reason);
-};
-
-
-whiteboard.reconnectStream = function() {
-	if(whiteboard.lastProto) {
-		whiteboard.lastProto.reset('because user clicked reconnect button');
-	}
-	whiteboard.startStream();
-};
-
-
-whiteboard.drawRandomStuff = function() {
-	var fill = new goog.graphics.SolidFill('yellow');
-	var stroke = new goog.graphics.Stroke(2, 'green');
-	//var rectElement = whiteboard.lastDrawArea.drawRect(30, 10, 100, 80, stroke, fill);
 };
 
 
@@ -401,7 +378,6 @@ whiteboard.init = function() {
 	whiteboard.setupControls();
 	whiteboard.setupDrawAreaOverlay();
 	whiteboard.setupDrawArea();
-	whiteboard.drawRandomStuff();
 	whiteboard.startStream();
 };
 

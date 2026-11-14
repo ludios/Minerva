@@ -20,7 +20,6 @@ goog.require('cw.eventual');
 goog.require('cw.json');
 goog.require('cw.net.ClientStream');
 goog.require('cw.net.IStringProtocol');
-goog.require('cw.net.HttpStreamingMode');
 goog.require('cw.net.demo.getEndpointByQueryArgs');
 goog.require('cw.repr');
 
