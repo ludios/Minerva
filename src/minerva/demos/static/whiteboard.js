@@ -6106,18 +6106,22 @@ function gj() {
 }
 M(window, ["click", "focus", "keydown", "keypress"], gj, j);
 function hj() {
-  Vi.g();
-  cj();
-  var a = bj;
-  $i.info("Telling server to clear the board.");
-  hg(a.C, Aa(["ClearBoard", k]))
+  if(bj) {
+    Vi.g();
+    cj();
+    var a = bj;
+    $i.info("Telling server to clear the board.");
+    hg(a.C, Aa(["ClearBoard", k]))
+  }
 }
 function ij(a) {
-  var b = new jc(a), a = Zc(Math.round(b.offsetX), 799), b = Zc(Math.round(b.offsetY), 599);
-  Vi.qc(a, b, 5, 5, new ai, new $h(Wi), h);
-  var c = bj, d = Wi;
-  $i.info("Telling server about circle at: " + a + ", " + b + " with color " + d);
-  hg(c.C, Aa(["Point", {x:a, y:b, color:d}]))
+  if(bj) {
+    var b = new jc(a), a = Zc(Math.round(b.offsetX), 799), b = Zc(Math.round(b.offsetY), 599);
+    Vi.qc(a, b, 5, 5, new ai, new $h(Wi), h);
+    var c = bj, d = Wi;
+    $i.info("Telling server about circle at: " + a + ", " + b + " with color " + d);
+    hg(c.C, Aa(["Point", {x:a, y:b, color:d}]))
+  }
 }
 function cj() {
   var a;

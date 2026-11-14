@@ -245,12 +245,20 @@ whiteboard.clearMyBoard = function() {
 
 
 whiteboard.clearBoard = function() {
+	if(!whiteboard.lastProto) {
+		// Disconnected: the other viewers' boards would not be cleared.
+		return;
+	}
 	whiteboard.clearMyBoard();
 	whiteboard.lastProto.sendClearBoard();
 };
 
 
 whiteboard.handleClick = function(ev) {
+	if(!whiteboard.lastProto) {
+		// Disconnected: the other viewers would not get the point.
+		return;
+	}
 	var patchedEv = new goog.events.BrowserEvent(ev);
 	// Browsers may report fractional coordinates (on zoomed pages, say),
 	// and rounding one in the board's last half pixel would leave the board.
