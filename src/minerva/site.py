@@ -50,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 # The repository checkout that this module is in (if it is in one).
 _REPO_DIR = PACKAGE_DIR.parent.parent
+# The uncompiled JavaScript client.  It is not part of the installed package.
+_JS_MINERVA_DIR = _REPO_DIR / "js_minerva"
 
 
 # --- The demo protocol ----------------------------------------------------------
@@ -450,7 +452,7 @@ def make_site(
     put_child(root, b"compiled_client", static(PACKAGE_DIR / "compiled_client"))
     put_child(root, b"closure-library", static(closure_library))
     put_child(root, b"js_coreweb", static(coreweb / "js_coreweb"))
-    put_child(root, b"js_minerva", static(_REPO_DIR / "js_minerva"))
+    put_child(root, b"js_minerva", static(_JS_MINERVA_DIR))
     put_child(root, b"@testres_Coreweb", static(coreweb / "coreweb" / "testres"))
 
     test_resources = Resource()
@@ -607,6 +609,12 @@ def _warn_about_setup(args: argparse.Namespace) -> None:
         _warn(
             f"Could not find Coreweb at {args.coreweb}.  Pages that use the "
             "uncompiled JavaScript will be broken; pass --coreweb."
+        )
+    if not (_JS_MINERVA_DIR / "deps.js").is_file():
+        _warn(
+            f"Could not find Minerva's JavaScript at {_JS_MINERVA_DIR}.  Pages that "
+            "use the uncompiled JavaScript will be broken; run minerva-site from a "
+            "checkout of Minerva's repository (for example, with `uv run`)."
         )
     if not bskystream.extra_installed():
         _warn(

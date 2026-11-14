@@ -16,6 +16,7 @@ from twisted.web.resource import Resource, getChildForRequest
 from twisted.web.server import NOT_DONE_YET
 from twisted.web.static import File
 
+from minerva import site
 from minerva.demos import bskystream
 from minerva.site import (
     DEMOS_STATIC_DIR,
@@ -181,6 +182,24 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             parse_args([])
         assert "start at least one" in capsys.readouterr().err
+
+
+def test_warns_when_js_minerva_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    At startup, `minerva-site` says so when it can't find the uncompiled
+    JavaScript client (as when it runs from an installed package instead of
+    a checkout).
+    """
+    warning = "Could not find Minerva's JavaScript"
+    args = parse_args(["--http", "tcp:8111"])
+    site._warn_about_setup(args)
+    assert warning not in caplog.text
+
+    monkeypatch.setattr(site, "_JS_MINERVA_DIR", tmp_path / "js_minerva")
+    site._warn_about_setup(args)
+    assert warning in caplog.text
 
 
 def make_root(clock: Clock, tmp_path: Path) -> Resource:

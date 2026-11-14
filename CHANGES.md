@@ -30,6 +30,10 @@ with Adobe Flash Player (see the README).
   similar.  It has a new `--coreweb PATH` option, and its Flash policy file
   lists the ports it actually listens on.  Auto-reloading (Pyquitter) is gone;
   use a tool like `watchfiles` instead.
+- `js_minerva/` is no longer installed with the Python package.  So
+  `minerva-site` serves the uncompiled JavaScript only when it runs from a
+  checkout of the repository; when it cannot find `js_minerva/`, it logs a
+  warning at startup.
 - The tutorials run with `python -m minerva.tutorial.standalone_N_...`.
 - Build scripts moved to `scripts/` and were ported to Python 3.
 - `js_minerva_tests.html?report=URL` POSTs the test results to `URL` when the
