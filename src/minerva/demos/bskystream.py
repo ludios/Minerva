@@ -176,7 +176,8 @@ class RateLimiter:
 
     def allow(self) -> bool:
         now = self._clock.seconds()
-        elapsed = now - self._updated
+        # The clock is the wall clock, which can step back.
+        elapsed = max(0.0, now - self._updated)
         self._tokens = min(self._burst, self._tokens + elapsed * self._rate)
         self._updated = now
         if self._tokens < 1:

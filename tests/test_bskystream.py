@@ -161,6 +161,14 @@ def test_post_to_string_is_restricted() -> None:
     ]
 
 
+def test_rate_limiter_when_the_clock_steps_back() -> None:
+    clock = Clock()
+    clock.advance(3600)
+    limiter = RateLimiter(clock, rate=4, burst=4)
+    clock.advance(-3600)
+    assert limiter.allow()
+
+
 def test_rate_limiter() -> None:
     clock = Clock()
     limiter = RateLimiter(clock, rate=2, burst=3)
