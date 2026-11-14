@@ -37,6 +37,7 @@ from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import ServerTransportFactory
 from minerva.web import (
     PACKAGE_DIR,
+    BetterResource,
     RevalidatedFile,
     WebPort,
     bad_request,
@@ -161,7 +162,7 @@ def _render_template(request: Request, name: str, **variables: object) -> bytes:
     )
 
 
-class ChatAppPage(Resource):
+class ChatAppPage(BetterResource):
     isLeaf = True
 
     def __init__(self, domain: str | None, main_socket_port: int | None) -> None:
@@ -183,7 +184,7 @@ class ChatAppPage(Resource):
         )
 
 
-class DumbTestPage(Resource):
+class DumbTestPage(BetterResource):
     isLeaf = True
 
     def __init__(self, main_socket_port: int | None) -> None:
@@ -206,7 +207,7 @@ def demos_static_href(name: str) -> str:
     return f"/demos_static/{name}?cb={file_digest(DEMOS_STATIC_DIR / name)}"
 
 
-class DemoPage(Resource):
+class DemoPage(BetterResource):
     """
     A demo's page (see `minerva.demos`).  With `dev_mode`, it loads the
     uncompiled JavaScript.
@@ -286,7 +287,7 @@ class WaitResource(Resource):
         return self._respond_later(request, b"// Done waiting.")
 
 
-class FormSandbox(Resource):
+class FormSandbox(BetterResource):
     isLeaf = True
 
     def render_GET(self, request: Request) -> bytes:
@@ -310,7 +311,7 @@ GET.
 # --- Resources used by the JavaScript tests (see TestXHDR.js) -----------------------
 
 
-class NoOriginHeader(Resource):
+class NoOriginHeader(BetterResource):
     isLeaf = True
 
     def render_GET(self, request: Request) -> bytes:
@@ -320,7 +321,7 @@ class NoOriginHeader(Resource):
         return b"POST"
 
 
-class SimpleResponse(Resource):
+class SimpleResponse(BetterResource):
     isLeaf = True
 
     def render_GET(self, request: Request) -> bytes:
@@ -353,7 +354,7 @@ def parse_ranges(value: str) -> list[range]:
     return ranges
 
 
-class UnicodeRainbow(Resource):
+class UnicodeRainbow(BetterResource):
     """
     Responds with the UTF-8 encoding of every code point in `?ranges=`.
     """
@@ -374,7 +375,7 @@ class UnicodeRainbow(Resource):
         return self.render_GET(request)
 
 
-class GetEndpointInfo(Resource):
+class GetEndpointInfo(BetterResource):
     """
     Tells TestClient.js which port the Flash socket endpoint listens on.
     """
@@ -389,7 +390,7 @@ class GetEndpointInfo(Resource):
         return json.dumps({"mainSocketPort": self._main_socket_port}).encode()
 
 
-class DisplayConnections(Resource):
+class DisplayConnections(BetterResource):
     isLeaf = True
 
     def render_GET(self, request: Request) -> bytes:
@@ -440,7 +441,7 @@ def make_site(
     closure_library: Path,
     coreweb: Path,
 ) -> ConnectionTrackingSite:
-    root = Resource()
+    root = BetterResource()
 
     def static(path: Path) -> RevalidatedFile:
         return RevalidatedFile(str(path))
@@ -455,7 +456,7 @@ def make_site(
     put_child(root, b"js_minerva", static(_JS_MINERVA_DIR))
     put_child(root, b"@testres_Coreweb", static(coreweb / "coreweb" / "testres"))
 
-    test_resources = Resource()
+    test_resources = BetterResource()
     put_child(test_resources, b"DisplayConnections", DisplayConnections())
     put_child(test_resources, b"SimpleResponse", SimpleResponse())
     put_child(test_resources, b"UnicodeRainbow", UnicodeRainbow())

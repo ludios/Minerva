@@ -33,7 +33,14 @@ from minerva.frames import (
 )
 from minerva.stream import ServerStream, StreamTracker
 from minerva.transport import HTTP_RESPONSE_PREAMBLE
-from minerva.web import HttpIo, WebPort, XDRFrame, htmldumps, put_child
+from minerva.web import (
+    BetterResource,
+    HttpIo,
+    WebPort,
+    XDRFrame,
+    htmldumps,
+    put_child,
+)
 from minerva.window import SACK
 from tests.helpers import make_http_hello
 from tests.mocks import (
@@ -449,6 +456,116 @@ class TestXDRFrame:
     def test_bad_request(self, args: dict[str, bytes]) -> None:
         request = self.render(XDRFrame(frozenset(["example.com"])), **args)
         assert request.responseCode == 400
+
+
+class _Leaf(BetterResource):
+    isLeaf = True
+
+    def render_GET(self, request: FakeRequest) -> bytes:
+        return b"leaf"
+
+
+class _PlainLeaf(Resource):
+    isLeaf = True
+
+    def render_GET(self, request: FakeRequest) -> bytes:
+        return b"plain leaf"
+
+
+class TestBetterResource:
+    @pytest.fixture
+    def root(self) -> BetterResource:
+        """
+        /leaf/, /plain, /dir/leaf/, and /empty (which has no children).
+        """
+        root = BetterResource()
+        put_child(root, b"leaf", _Leaf())
+        put_child(root, b"plain", _PlainLeaf())
+        directory = BetterResource()
+        put_child(directory, b"", _Leaf())
+        put_child(directory, b"leaf", _Leaf())
+        put_child(root, b"dir", directory)
+        put_child(root, b"empty", BetterResource())
+        return root
+
+    def get(self, root: Resource, uri: bytes) -> FakeRequest:
+        """
+        Return the request for `uri`, after `root` has responded to it.
+        """
+        request = FakeRequest()
+        request.method = b"GET"
+        request.uri = uri
+        request.postpath = uri.partition(b"?")[0].split(b"/")[1:]
+        result = getChildForRequest(root, request).render(request)
+        # (Twisted's 404 page writes its response itself.)
+        if isinstance(result, bytes):
+            request.write(result)
+        return request
+
+    @pytest.mark.parametrize("uri", [b"/leaf/", b"/leaf/?a=1", b"/dir/", b"/dir/leaf/"])
+    def test_served_at_the_url_with_a_final_slash(
+        self, root: BetterResource, uri: bytes
+    ) -> None:
+        request = self.get(root, uri)
+        assert request.responseCode is None  # 200
+        assert request.written_bytes() == b"leaf"
+
+    @pytest.mark.parametrize(
+        ("uri", "location"),
+        [
+            (b"/leaf", b"/leaf/"),
+            (b"/leaf?a=1&b=/", b"/leaf/?a=1&b=/"),
+            (b"/dir", b"/dir/"),
+            (b"/dir/leaf", b"/dir/leaf/"),
+        ],
+    )
+    def test_redirects_to_the_url_with_a_final_slash(
+        self, root: BetterResource, uri: bytes, location: bytes
+    ) -> None:
+        request = self.get(root, uri)
+        assert request.responseCode == 301
+        assert request.responseHeaders.getRawHeaders(b"location") == [location]
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            b"/leaf/more",
+            b"/leaf/more/",
+            b"/leaf//",
+            b"/dir/leaf/more",
+            b"/plain/more",
+            b"/nothing",
+            b"/dir/nothing",
+            # Not a redirect to /empty/, which doesn't exist.
+            b"/empty",
+            b"/empty/",
+        ],
+    )
+    def test_not_found(self, root: BetterResource, uri: bytes) -> None:
+        assert self.get(root, uri).responseCode == 404
+
+    @pytest.mark.parametrize("uri", [b"/plain", b"/plain/"])
+    def test_child_that_is_not_a_better_resource_is_not_redirected(
+        self, root: BetterResource, uri: bytes
+    ) -> None:
+        request = self.get(root, uri)
+        assert request.responseCode is None  # 200
+        assert request.written_bytes() == b"plain leaf"
+
+    @pytest.mark.parametrize(
+        ("uri", "code"),
+        [
+            (b"/io", 301),
+            (b"/io/more", 404),
+            (b"/xdrframe", 301),
+            (b"/xdrframe/more?id=f1&domain=example.com", 404),
+        ],
+    )
+    def test_web_port(
+        self, clock: Clock, mock_tracker: DummyStreamTracker, uri: bytes, code: int
+    ) -> None:
+        web_port = WebPort(clock, mock_tracker, allowed_domains=["example.com"])
+        assert self.get(web_port, uri).responseCode == code
 
 
 def test_web_port_children(clock: Clock, mock_tracker: DummyStreamTracker) -> None:

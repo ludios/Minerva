@@ -240,10 +240,9 @@ class TestSite:
         assert isinstance(resource, File)
         assert resource.path.endswith("index.html")
 
-    @pytest.mark.parametrize("path", [b"/chatapp", b"/chatapp/"])
     @pytest.mark.parametrize("standalone", [b"0", b"1"])
-    def test_chatapp(self, root: Resource, path: bytes, standalone: bytes) -> None:
-        _, request = self.get(root, path, standaloneClient=standalone)
+    def test_chatapp(self, root: Resource, standalone: bytes) -> None:
+        _, request = self.get(root, b"/chatapp/", standaloneClient=standalone)
         page = request.written_bytes().decode()
         assert '__demo_shared_domain = "example.com";' in page
         assert "__demo_mainSocketPort = 8112;" in page
@@ -251,6 +250,28 @@ class TestSite:
             f"standaloneClient = {'true' if standalone == b'1' else 'false'};" in page
         )
         assert ("compiled_client/minerva-client.js" in page) == (standalone == b"1")
+
+    @pytest.mark.parametrize(
+        ("path", "code"),
+        [
+            (b"/chatapp", 301),
+            (b"/chatapp/more", 404),
+            (b"/whiteboard", 301),
+            (b"/@testres_Minerva/GetEndpointInfo", 301),
+            (b"/@testres_Minerva/GetEndpointInfo/more", 404),
+            (b"/_minerva/io", 301),
+            (b"/_minerva/io/more", 404),
+            # Requested without the final slash by old pages; not redirected.
+            (b"/wait_resource/more", 404),
+        ],
+    )
+    def test_one_url_per_page(self, root: Resource, path: bytes, code: int) -> None:
+        request = FakeRequest()
+        request.method = b"GET"
+        request.uri = path
+        request.postpath = path.split(b"/")[1:]
+        getChildForRequest(root, request).render(request)
+        assert request.responseCode == code
 
     def test_dumbtest(self, root: Resource) -> None:
         _, request = self.get(root, b"/dumbtest/")

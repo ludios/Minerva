@@ -12,6 +12,8 @@ from typing import IO, cast, override
 
 import jinja2
 from markupsafe import Markup
+from twisted.web.http import MOVED_PERMANENTLY
+from twisted.web.pages import notFound
 from twisted.web.resource import IResource, Resource
 from twisted.web.server import NOT_DONE_YET, Request
 from twisted.web.static import File, StaticProducer
@@ -65,6 +67,66 @@ def put_child(parent: Resource, path: bytes, child: Resource) -> None:
     parent.putChild(path, cast(IResource, child))
 
 
+class _PermanentRedirect(Resource):
+    """
+    Responds to every request with a 301 redirect to `location`.
+    """
+
+    isLeaf = True
+
+    def __init__(self, location: bytes) -> None:
+        """
+        `location` is the URL to redirect to; it may be relative.
+        """
+        super().__init__()
+        self._location = location
+
+    @override
+    def render(self, request: Request) -> bytes:
+        request.setResponseCode(MOVED_PERMANENTLY)
+        request.setHeader(b"location", self._location)
+        request.setHeader(b"content-type", b"text/plain; charset=utf-8")
+        return b"Moved to " + self._location + b"\n"
+
+
+class BetterResource(Resource):
+    """
+    A `Resource` that serves each of its children at exactly one URL, so that
+    nobody can link to (or cache, or match a proxy rule against) a second URL
+    for the same page:
+
+    - If a child is a leaf, a URL with more path segments after the child's
+      name (`/child/more`) gets a 404 Not Found response.  A plain `Resource`
+      would serve the child.
+    - If a child is a `BetterResource`, the URL without the final slash
+      (`/child`) gets a redirect to `/child/`.  A plain `Resource` would serve
+      a leaf child at both URLs.
+    """
+
+    @override
+    def getChildWithDefault(
+        self, path: bytes, request: Request
+    ) -> IResource | Resource:
+        """
+        Return the resource that handles `request`, where `path` is the path
+        segment that names a child of this resource, and `request.postpath`
+        holds the path segments after `path`.
+        """
+        child = self.children.get(path)
+        if child is None:
+            # A dynamic child, or the 404 page.
+            return self.getChild(path, request)
+        if child.isLeaf and request.postpath not in ([], [b""]):
+            return notFound()
+        if not request.postpath and path != b"" and isinstance(child, BetterResource):
+            # `/child` was requested.  Redirect only if `/child/` exists.
+            if not child.isLeaf and b"" not in child.children:
+                return notFound()
+            url_path, question_mark, query = request.uri.partition(b"?")
+            return _PermanentRedirect(url_path + b"/" + question_mark + query)
+        return child
+
+
 class RevalidatedFile(File):
     """
     A `File` (or a directory of files) that tells the browser to ask the
@@ -95,7 +157,7 @@ def bad_request(request: Request, message: str) -> bytes:
     return message.encode("utf-8")
 
 
-class HttpIo(Resource):
+class HttpIo(BetterResource):
     """
     The endpoint for the client's HTTP transports.  Every POST becomes a
     `ServerTransport`.
@@ -118,7 +180,7 @@ class HttpIo(Resource):
 _FRAME_ID = re.compile(rb"[A-Za-z0-9]{0,50}")
 
 
-class XDRFrame(Resource):
+class XDRFrame(BetterResource):
     """
     A page to load into an iframe.  It sets `document.domain` so that it can
     talk to the parent page (which must set `document.domain` too), and it can
@@ -159,7 +221,7 @@ class XDRFrame(Resource):
         return html.encode("utf-8")
 
 
-class WebPort(Resource):
+class WebPort(BetterResource):
     """
     Put this resource into your site's resource tree (conventionally at
     `/_minerva/`), so that Minerva clients can connect to your server.  Its
